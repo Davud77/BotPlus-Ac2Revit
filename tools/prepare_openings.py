@@ -19,8 +19,10 @@ ROOT=Path(__file__).resolve().parents[1]
 def prepare(out,limit=0,manifest_path=None,ifc_path=None,ifc_model=None,frame=None):
     import ifcopenshell
     import ifcopenshell.geom
-    m=json.loads((manifest_path or ROOT/'artifacts/runtime/geometry-offsets/manifest.json').read_text(encoding='utf-8'))
-    path=ifc_path or ROOT/'artifacts/reference-exchange/exports/Abakan_brep_all_materials_20261014.ifc'
+    if manifest_path is None or ifc_path is None:
+        raise ValueError('Explicit source manifest and IFC paths are required')
+    m=json.loads(manifest_path.read_text(encoding='utf-8'))
+    path=ifc_path
     model=ifc_model if ifc_model is not None else ifcopenshell.open(str(path));settings=ifcopenshell.geom.settings()
     settings.set('use-world-coords',True);settings.set('mesher-linear-deflection',.00025)
     source={e['sourceGuid']:e for e in m['elements']};identities=SourceIfcIndex(m,model)
@@ -116,5 +118,6 @@ def prepare(out,limit=0,manifest_path=None,ifc_path=None,ifc_model=None,frame=No
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--out',type=Path,required=True);p.add_argument('--limit',type=int,default=0);a=p.parse_args()
-    print(json.dumps(prepare(a.out,a.limit),indent=2),flush=True)
+    p=argparse.ArgumentParser();p.add_argument('--out',type=Path,required=True);p.add_argument('--limit',type=int,default=0)
+    p.add_argument('--manifest',type=Path,required=True);p.add_argument('--ifc',type=Path,required=True);a=p.parse_args()
+    print(json.dumps(prepare(a.out,a.limit,a.manifest,a.ifc),indent=2),flush=True)

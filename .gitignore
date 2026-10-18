@@ -16,6 +16,7 @@
 *.user
 .vs/
 .pytest_cache/
+config/*.local.json
 Исходники/
 artifacts/
 dist/

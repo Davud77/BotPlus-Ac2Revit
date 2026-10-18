@@ -93,7 +93,7 @@ def project_identity(project, registry=None):
     if not value or not Path(value).is_file():
         raise ValueError('Сначала сохраните открытый проект Archicad в PLN.')
     path = Path(value).resolve()
-    registry = registry or ROOT/'config/test-projects.json'
+    registry = registry or ROOT/'config/project-registry.local.json'
     if registry.exists():
         for row in json.loads(registry.read_text(encoding='utf-8-sig'))['projects']:
             if (ROOT/row['source']).resolve() == path:

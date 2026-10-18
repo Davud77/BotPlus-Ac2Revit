@@ -1,29 +1,25 @@
-"""Queue a bounded diagnostic import for the loaded Ac2Revit add-in."""
-from pathlib import Path
-import datetime
+"""Queue a diagnostic import from explicit inputs without a source-specific preset."""
+import argparse
 import json
 import os
-import sys
+from pathlib import Path
 
-root = Path(__file__).resolve().parents[1]
-case = sys.argv[1] if len(sys.argv) > 1 else 'sample'
-if case not in ('sample', 'geometry','join-fixture','geometry-joins','geometry-offsets','offset-fixture'):
-    raise SystemExit('Unknown runtime case')
-folder = root/'artifacts/runtime'
-inbox = folder/'job.json'
-if inbox.exists():
-    raise SystemExit('A diagnostic job is already pending')
-stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
-out = folder/case
-job = {'operation': 'import', 'manifestPath': str(out/'manifest.json'),
-       'templatePath': str(next(root.glob('*.rte'))),
-       'outputRvt': str(out/f'Abakan_{case}_v2_{stamp}.rvt'),
-       'reportPath': str(out/f'import-v2-{stamp}.json'),
-       'resultPath': str(out/f'result-v2-{stamp}.json')}
-if case=='geometry-offsets' and '--fresh' not in sys.argv[2:]:
-    job['operation']='repairCopy'
-    job['sourceRvt']=str(root/'artifacts/runtime/geometry-joins/Abakan_geometry-joins_v2_20261013-120918.rvt')
-temp = inbox.with_suffix('.tmp')
-temp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding='utf-8')
-os.replace(temp, inbox)
-print(json.dumps(job, ensure_ascii=True, indent=2))
+ROOT=Path(__file__).resolve().parents[1]
+
+def queue(manifest,template,out):
+    for path in (manifest,template):
+        if not path.resolve().is_relative_to(ROOT) or not path.is_file():raise ValueError('Input must exist inside workspace')
+    out=out.resolve()
+    if not out.is_relative_to(ROOT) or out==ROOT:raise ValueError('Output must be a new workspace directory')
+    inbox=ROOT/'artifacts/runtime/job.json'
+    if inbox.exists():raise FileExistsError('A diagnostic job is already pending')
+    out.mkdir(parents=True,exist_ok=False);inbox.parent.mkdir(parents=True,exist_ok=True)
+    job={'operation':'import','manifestPath':str(manifest.resolve()),'templatePath':str(template.resolve()),
+         'outputRvt':str(out/'Translated_model.rvt'),'reportPath':str(out/'import-report.json'),'resultPath':str(out/'result.json')}
+    temp=inbox.with_suffix('.tmp');temp.write_text(json.dumps(job,ensure_ascii=False,indent=2),encoding='utf-8');os.replace(temp,inbox)
+    return job
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser();parser.add_argument('--manifest',type=Path,required=True)
+    parser.add_argument('--template',type=Path,required=True);parser.add_argument('--out',type=Path,required=True)
+    args=parser.parse_args();print(json.dumps(queue(args.manifest,args.template,args.out),ensure_ascii=False,indent=2))

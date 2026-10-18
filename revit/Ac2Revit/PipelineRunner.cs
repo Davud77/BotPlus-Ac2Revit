@@ -186,7 +186,7 @@ public static class PipelineRunner
         {
             string input=MissingPlan(Resolve(plan.ColumnExtrusions),"columns","profile-columns",true);
             // Large native profile replacement crashed Revit's constraint solver
-            // on Ippodrom after private memory grew to 23 GB. Keep the already
+            // during a large import after private memory grew to 23 GB. Keep the already
             // verified IFC bodies rather than risking the complete import.
             if(plan.ProfileColumnMode=="ifc" || (plan.ProfileColumnMode=="auto" && Count(input,"columns")>500))
             {

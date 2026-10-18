@@ -18,6 +18,7 @@ if __name__=='__main__':
         if not f.is_file() or not f.resolve().is_relative_to(ROOT):raise ValueError('Expected existing workspace input')
     if a.rebuild_rooms and (a.mapping is None or not a.mapping.is_file() or not a.mapping.resolve().is_relative_to(ROOT)):raise ValueError('Room rebuilding requires an existing workspace mapping')
     inbox=ROOT/'artifacts/runtime/job.json'
+    inbox.parent.mkdir(parents=True,exist_ok=True)
     if inbox.exists():raise FileExistsError('Another runtime job is pending')
     stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
     out=ROOT/'artifacts/quality'/('separator-rooms-trial' if a.rebuild_rooms else 'separator-repeat' if a.check_copy else 'separator-audit')/stamp
@@ -25,7 +26,7 @@ if __name__=='__main__':
     job={'operation':'roomSeparatorsAndRoomsCopy' if a.rebuild_rooms else 'roomSeparatorsCheckCopy' if a.check_copy else 'roomSeparatorAudit',
          'sourceRvt':str(a.source.resolve()),'manifestPath':str(a.plan.resolve()),'meshManifestPath':str(a.manifest.resolve()),
          'reportPath':str(out/'separator-audit.json'),'resultPath':str(out/'result.json')}
-    if a.check_copy or a.rebuild_rooms:job['outputRvt']=str(out/'Abakan_repeat_separators.rvt')
+    if a.check_copy or a.rebuild_rooms:job['outputRvt']=str(out/'Translated_repeat_separators.rvt')
     if a.rebuild_rooms:job['mappingPath']=str(a.mapping.resolve())
     temp=inbox.with_suffix('.tmp');temp.write_text(json.dumps(job,indent=2),encoding='utf-8');os.replace(temp,inbox)
     print(json.dumps(job,indent=2))

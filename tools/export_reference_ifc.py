@@ -10,16 +10,18 @@ from ac2r.client import TapirClient
 
 parser=argparse.ArgumentParser()
 parser.add_argument('--out',type=Path,required=True)
-parser.add_argument('--translator',default='Точный Экспорт Геометрии')
+parser.add_argument('--translator',required=True)
+parser.add_argument('--source-project',type=Path,required=True)
+parser.add_argument('--port',type=int,default=19723)
 args=parser.parse_args()
 target=args.out.resolve()
 if not target.is_relative_to(root.resolve()) or target.suffix.lower()!='.ifc':
     raise ValueError('Export must be an IFC file inside the workspace')
 if target.exists():raise FileExistsError(target)
 target.parent.mkdir(parents=True,exist_ok=True)
-api=TapirClient(archive=target.with_suffix('.api'),timeout=3600)
+api=TapirClient(args.port,archive=target.with_suffix('.api'),timeout=3600)
 project=api.call('GetProjectInfo')
-expected=(root/'ЖК Абакан Финальная посадка 7.pln').resolve()
+expected=args.source_project.resolve()
 if Path(project.get('projectPath','')).resolve()!=expected:
     raise ValueError('Unexpected source project: '+str(project))
 translators=api.call('GetIFCExportTranslators')['translators']

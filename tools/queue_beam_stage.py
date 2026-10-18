@@ -24,6 +24,7 @@ def queue(source,reference,limit=0):
         ordered={r['sourceGuid']:r for r in special+rows}
         data['elements']=list(ordered.values())[:limit]
     inbox=ROOT/'artifacts/runtime/job.json'
+    inbox.parent.mkdir(parents=True,exist_ok=True)
     if inbox.exists():raise FileExistsError('A runtime job is pending')
     stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
     out=ROOT/'artifacts/stages'/('beams-'+('trial' if limit else 'all')+'-'+stamp)
@@ -31,13 +32,13 @@ def queue(source,reference,limit=0):
     mesh=out/'beam-bodies.json'
     mesh.write_text(json.dumps(data,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
     job={'operation':'beamBodyCopy','sourceRvt':str(source),'meshManifestPath':str(mesh),
-         'outputRvt':str(out/'Abakan_beams.rvt'),'reportPath':str(out/'report.json'),'resultPath':str(out/'result.json')}
+         'outputRvt':str(out/'Translated_beams.rvt'),'reportPath':str(out/'report.json'),'resultPath':str(out/'result.json')}
     temp=inbox.with_suffix('.tmp');temp.write_text(json.dumps(job,indent=2),encoding='utf-8');os.replace(temp,inbox)
     return job
 
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--source',type=Path,required=True)
-    p.add_argument('--reference',type=Path,default=ROOT/'artifacts/stages/all-beam-bodies-20261015/beam-bodies.json')
+    p.add_argument('--reference',type=Path,required=True)
     p.add_argument('--limit',type=int,default=0);a=p.parse_args()
     print(json.dumps(queue(a.source,a.reference,a.limit),indent=2))

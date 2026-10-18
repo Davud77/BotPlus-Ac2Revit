@@ -55,10 +55,9 @@ def recognise_part(vertices,faces,tolerance=1e-6):
 
 
 def prepare(out, reference=None, already=None):
-    data=json.loads((reference or ROOT/'artifacts/stages/all-column-bodies-20261014/column-bodies.json').read_text(encoding='utf-8'))
-    if already is None:
-        native=json.loads((ROOT/'artifacts/stages/columns-native-20261014-155906/report.json').read_text(encoding='utf-8'))
-        already={r['SourceKey'] for r in native['Items'] if r['Kind']=='Column' and r['Status']=='created'}
+    if reference is None:raise ValueError('Explicit column body reference path is required')
+    data=json.loads(reference.read_text(encoding='utf-8'))
+    if already is None:already=set()
     rows,checks=[],[]
     for record in data['elements']:
         key=record['sourceGuid'];d=record['rawSource']['details'];check={'sourceGuid':key,'profiled':'profileId' in d}
@@ -98,5 +97,10 @@ def prepare(out, reference=None, already=None):
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--out',type=Path,required=True);a=p.parse_args()
-    print(json.dumps(prepare(a.out),indent=2),flush=True)
+    p=argparse.ArgumentParser();p.add_argument('--out',type=Path,required=True)
+    p.add_argument('--reference',type=Path,required=True);p.add_argument('--exclude-native-report',type=Path);a=p.parse_args()
+    already=set()
+    if a.exclude_native_report:
+        report=json.loads(a.exclude_native_report.read_text(encoding='utf-8'))
+        already={r['SourceKey'] for r in report['Items'] if r['Kind']=='Column' and r['Status']=='created'}
+    print(json.dumps(prepare(a.out,a.reference,already),indent=2),flush=True)

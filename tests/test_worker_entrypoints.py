@@ -15,11 +15,23 @@ class WorkerTests(unittest.TestCase):
     def test_standalone_worker_imports_without_inherited_pythonpath(self):
         env=dict(os.environ);env.pop('PYTHONPATH',None);env['PYTHONUTF8']='1'
         with tempfile.TemporaryDirectory() as temp:
-            for name in ('prepare_column_bodies.py','prepare_stage_plan.py','prepare_openings.py','prepare_supplemental_bodies.py'):
+            for name in ('prepare_column_bodies.py','prepare_stage_plan.py','prepare_openings.py','prepare_supplemental_bodies.py',
+                         'prepare_extruded_columns.py','prepare_pipeline.py','export_reference_ifc.py','queue_column_stage.py',
+                         'queue_beam_stage.py','queue_extruded_columns.py','queue_native_beams.py','queue_runtime_job.py','queue_separator_check.py'):
                 with self.subTest(worker=name):
                     result=subprocess.run([sys.executable,str(ROOT/'tools'/name),'--help'],cwd=temp,env=env,capture_output=True,text=True,encoding='utf-8',timeout=30)
                     self.assertEqual(result.returncode,0,result.stderr)
                     self.assertIn('usage:',result.stdout)
+
+    def test_geometry_workers_require_source_paths_instead_of_selecting_a_model(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for name in ('prepare_column_bodies.py','prepare_stage_plan.py','prepare_openings.py'):
+                with self.subTest(worker=name):
+                    result=subprocess.run([sys.executable,str(ROOT/'tools'/name),'--out',str(Path(temp)/'output')],cwd=temp,capture_output=True,text=True,timeout=30)
+                    self.assertEqual(result.returncode,2)
+                    self.assertIn('--manifest',result.stderr)
+                    self.assertIn('--ifc',result.stderr)
+                    self.assertFalse((Path(temp)/'output').exists())
 
     def test_decomposed_body_does_not_duplicate_another_source_element(self):
         class Product:

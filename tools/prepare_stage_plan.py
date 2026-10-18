@@ -153,7 +153,7 @@ def prepare(manifest_path, ifc_path, out, ifc_model=None, column_bodies_path=Non
                  'identityNote':a['identityNote']}
         selected.append({'sourceGuid':a['sourceGuid'],'kind':'Grid','levelKey':manifest['levels'][0]['key'],
                          'mark':a['axisTag'],'dependencies':[],'status':'ready','raw':a,'payload':payload,'contentHash':digest(payload)})
-    # A fresh project must never inherit Abakan's surfaces.
+    # Use only this source manifest's surface definitions.
     surfaces=manifest.get('surfaces',[])
     manifest['elements']=selected;manifest['types']=[];manifest['surfaces']=surfaces
     manifest['source']['scope']+='; staged missing columns and IFC axes; reference geometry checked'
@@ -170,7 +170,7 @@ def prepare(manifest_path, ifc_path, out, ifc_model=None, column_bodies_path=Non
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--manifest',type=Path,default=ROOT/'artifacts/runtime/geometry-offsets/manifest.json')
-    parser.add_argument('--ifc',type=Path,default=ROOT/'artifacts/reference-exchange/exports/Abakan_brep_all_materials_20261014.ifc')
+    parser=argparse.ArgumentParser();parser.add_argument('--manifest',type=Path,required=True)
+    parser.add_argument('--ifc',type=Path,required=True)
     parser.add_argument('--out',type=Path,required=True);args=parser.parse_args()
     print(json.dumps(prepare(args.manifest,args.ifc,args.out),ensure_ascii=False,indent=2),flush=True)

@@ -66,6 +66,14 @@ class SessionTests(unittest.TestCase):
     def test_unsaved_source_is_rejected(self):
         with self.assertRaisesRegex(ValueError,'PLN'):session.project_identity({})
 
+    def test_default_local_registry_preserves_existing_exchange_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);source=root/'Source.pln';source.write_bytes(b'source')
+            config=root/'config';config.mkdir()
+            (config/'project-registry.local.json').write_text(json.dumps({'projects':[{'source':str(source),'projectId':'retained-id'}]}),encoding='utf-8')
+            with patch.object(session,'ROOT',root):
+                self.assertEqual(session.project_identity({'projectPath':str(source)}),'retained-id')
+
     def test_project_switched_after_ui_connection_is_rejected_before_export(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)

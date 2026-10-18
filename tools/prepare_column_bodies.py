@@ -89,8 +89,8 @@ def prepare(manifest_path,ifc_path,out,kind='Column',keys=None,ifc_model=None,fr
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--manifest',type=Path,default=ROOT/'artifacts/runtime/geometry-offsets/manifest.json')
-    p.add_argument('--ifc',type=Path,default=ROOT/'artifacts/reference-exchange/exports/Abakan_brep_all_materials_20261014.ifc')
+    p=argparse.ArgumentParser();p.add_argument('--manifest',type=Path,required=True)
+    p.add_argument('--ifc',type=Path,required=True)
     p.add_argument('--kind',choices=['Column','Beam','Wall'],default='Column')
     p.add_argument('--keys-file',type=Path)
     p.add_argument('--out',type=Path,required=True);a=p.parse_args()

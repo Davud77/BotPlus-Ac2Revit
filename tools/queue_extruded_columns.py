@@ -10,12 +10,15 @@ ROOT=Path(__file__).resolve().parents[1]
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--limit',type=int,default=6)
-    p.add_argument('--source',type=Path,default=ROOT/'artifacts/stages/columns-body-20261014-165921/Abakan_columns.rvt')
+    p.add_argument('--source',type=Path,required=True);p.add_argument('--plan',type=Path,required=True)
     a=p.parse_args()
     if a.limit<0:p.error('Negative limit')
+    for path in (a.source,a.plan):
+        if not path.resolve().is_relative_to(ROOT) or not path.is_file():raise ValueError('Expected existing workspace input')
     inbox=ROOT/'artifacts/runtime/job.json'
+    inbox.parent.mkdir(parents=True,exist_ok=True)
     if inbox.exists():raise FileExistsError('Another runtime job is pending')
-    plan=json.loads((ROOT/'artifacts/stages/extruded-preflight-v2-20261015/extrusions.json').read_text(encoding='utf-8'))
+    plan=json.loads(a.plan.read_text(encoding='utf-8'))
     rows=plan['columns']
     if a.limit:
         # Exercise a profiled member, unequal part tops and holes before filling
@@ -35,7 +38,7 @@ if __name__=='__main__':
     plan['columns']=rows;(out/'extrusions.json').write_text(json.dumps(plan,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
     template=ROOT/'revit/assets/AC2R_StructuralColumn.rft'
     if not template.exists():shutil.copy2('C:/ProgramData/Autodesk/RVT 2026/Family Templates/English/Metric Structural Column.rft',template)
-    job={'operation':'nativeExtrudedColumnsCopy','sourceRvt':str(a.source.resolve()),'outputRvt':str(out/'Abakan_native_profiles.rvt'),
+    job={'operation':'nativeExtrudedColumnsCopy','sourceRvt':str(a.source.resolve()),'outputRvt':str(out/'Translated_native_profiles.rvt'),
          'templatePath':str(template),'manifestPath':str(out/'extrusions.json'),'reportPath':str(out/'report.json'),'resultPath':str(out/'result.json')}
     temp=inbox.with_suffix('.tmp');temp.write_text(json.dumps(job,indent=2),encoding='utf-8');os.replace(temp,inbox)
     print(json.dumps(job,indent=2),flush=True)
