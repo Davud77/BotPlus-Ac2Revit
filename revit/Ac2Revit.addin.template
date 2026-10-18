@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>BotPlus Ac2Revit</Name>
+    <Assembly>__ASSEMBLY_PATH__</Assembly>
+    <AddInId>e0dc76dd-3209-49b0-8f9e-ad159d229a7a</AddInId>
+    <FullClassName>Ac2Revit.App</FullClassName>
+    <VendorId>AC2R</VendorId>
+    <VendorDescription>Deterministic Archicad JSON translator</VendorDescription>
+  </AddIn>
+</RevitAddIns>

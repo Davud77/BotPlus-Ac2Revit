@@ -1,0 +1,19 @@
+{
+  "allowPartial": true,
+  "zoneMode": "room",
+  "roomAreaToleranceSquareMeters": 1.0,
+  "connectWalls": true,
+  "wallJoinToleranceMeters": 0.001,
+  "families": {
+    "Window:DF6754B3-BBE0-49E8-99FA-DEBB10CEC140": {
+      "family": "ЗАПОЛНИТЬ_ПО_ЗАГРУЖЕННОМУ_СЕМЕЙСТВУ",
+      "type": "ЗАПОЛНИТЬ_ПО_ЗАГРУЖЕННОМУ_ТИПУ",
+      "widthParameter": "",
+      "heightParameter": "",
+      "calibrated": false,
+      "sillFromWallBase": 0.0,
+      "handFlipXor": false,
+      "facingFlipXor": false
+    }
+  }
+}

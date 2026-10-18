@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RevitInstallDir Condition="'$(RevitInstallDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitInstallDir>
+    <AssemblyName>Ac2Revit</AssemblyName>
+    <Version>0.45.0</Version>
+    <Product>BotPlus Ac2Revit</Product>
+    <Description>Deterministic Archicad to Revit translator</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="RevitAPI"><HintPath>$(RevitInstallDir)\RevitAPI.dll</HintPath><Private>false</Private><ExternallyResolved>true</ExternallyResolved></Reference>
+    <Reference Include="RevitAPIUI"><HintPath>$(RevitInstallDir)\RevitAPIUI.dll</HintPath><Private>false</Private><ExternallyResolved>true</ExternallyResolved></Reference>
+  </ItemGroup>
+</Project>

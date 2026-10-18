@@ -1,0 +1,4 @@
+# Tested geometry preparation environment, CPython 3.12 x64.
+ifcopenshell==0.8.5
+numpy==2.5.4
+shapely==2.2.0
