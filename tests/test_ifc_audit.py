@@ -40,7 +40,7 @@ class IfcAuditTests(unittest.TestCase):
         return path,identity
 
     def test_ids_units_world_placement_and_opening_subtraction(self):
-        with tempfile.TemporaryDirectory(dir=ROOT/'artifacts',prefix='ifc-test-') as temp:
+        with tempfile.TemporaryDirectory(prefix='ifc-test-') as temp:
             folder=Path(temp);path,identity=self.fixture(folder)
             summary=audit(path,identity,folder/'out',2)
             report=json.loads((folder/'out/audit.json').read_text(encoding='utf-8'))
@@ -54,7 +54,7 @@ class IfcAuditTests(unittest.TestCase):
             self.assertFalse(summary['geometryEqualityProven'])
 
     def test_incomplete_source_is_rejected(self):
-        with tempfile.TemporaryDirectory(dir=ROOT/'artifacts',prefix='ifc-test-') as temp:
+        with tempfile.TemporaryDirectory(prefix='ifc-test-') as temp:
             folder=Path(temp);path,identity=self.fixture(folder)
             identity.write_text('{"complete":false}',encoding='utf-8')
             with self.assertRaisesRegex(ValueError,'incomplete'):
