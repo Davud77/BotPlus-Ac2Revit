@@ -8,7 +8,7 @@ namespace Ac2Revit;
 /// <summary>Exact IFC geometry for categories with no native adapter, in bounded batches.</summary>
 public static class SupplementalBodiesStage
 {
-    public static Report Run(Document doc,string planPath,string folder,Action<string,int,int>? progress=null)
+    public static Report Run(Document doc,string planPath,string folder,Action<string,int,int>? progress=null,ISet<string>? kinds=null)
     {
         string Resolve(string path)=>Path.GetFullPath(path,Path.GetDirectoryName(planPath)!);
         var bundle=JsonNode.Parse(File.ReadAllText(planPath))!;
@@ -24,9 +24,21 @@ public static class SupplementalBodiesStage
         var guard=Storage.Index(doc,project).GetValueOrDefault("pipeline-source-snapshot");
         if(guard==null || Storage.Read(guard)?.Hash!=Json.Hash(new{manifestSha,referenceSha,frameSha}))throw new InvalidDataException("Supplemental source/frame does not match the saved core model");
         Directory.CreateDirectory(folder);var report=new Report{ProjectId=project,Mode="supplementalIfcBodies"};int batchNumber=0;
+        using var process=System.Diagnostics.Process.GetCurrentProcess();process.Refresh();long initialMemory=process.PrivateMemorySize64;
+        int processedBodies=0,totalBodies=bundle["outcomes"]?["extracted"]?.GetValue<int>()??0;
+        if(kinds!=null)
+        {
+            totalBodies=0;
+            foreach(var batch in bundle["batches"]!.AsArray().Where(b=>kinds.Contains(b!["kind"]!.GetValue<string>())))
+            {
+                if(batch!["bodyCount"] is JsonNode count)totalBodies+=count.GetValue<int>();
+                else{using var legacy=JsonDocument.Parse(File.ReadAllText(Resolve(batch["path"]!.GetValue<string>())));totalBodies+=legacy.RootElement.GetProperty("elements").GetArrayLength();}
+            }
+        }
         foreach(var batch in bundle["batches"]!.AsArray())
         {
             string bodyPath=Resolve(batch!["path"]!.GetValue<string>()),sourceKind=batch["kind"]!.GetValue<string>();
+            if(kinds!=null && !kinds.Contains(sourceKind))continue;
             string auditPath=Path.Combine(Path.GetDirectoryName(bodyPath)!,"audit.json");
             if(File.Exists(auditPath))
             {
@@ -37,18 +49,24 @@ public static class SupplementalBodiesStage
             var data=JsonNode.Parse(File.ReadAllText(bodyPath))!;
             if(data["ifcToSource"]?["hash"]?.GetValue<string>()!=frameHash || data["ifcSha256"]?.GetValue<string>()!=referenceSha)throw new InvalidDataException("Supplemental IFC frame/hash mismatch");
             var index=Storage.Index(doc,project);
+            int batchBodies=data["elements"]!.AsArray().Count;
             var missing=data["elements"]!.AsArray().Where(r=>r!=null && !index.ContainsKey(r["sourceGuid"]!.GetValue<string>())).Select(r=>r!.DeepClone()).ToArray();
             data["elements"]=new JsonArray(missing);
             string input=Path.Combine(folder,$"{batchNumber++:0000}.json");File.WriteAllText(input,data.ToJsonString());
+            bool committed=false;
             if(missing.Length>0)
             {
                 string kind=sourceKind;
-                var stage=ReferenceFallback.Run(doc,input,Resolve,(done,total)=>progress?.Invoke("supplemental:"+kind,done,total),BuiltInCategory.OST_GenericModel,"Supplemental:"+kind,uniqueMarks:true);
+                var stage=ReferenceFallback.Run(doc,input,Resolve,(done,total)=>progress?.Invoke("supplemental:"+kind,
+                    totalBodies>0?processedBodies+batchBodies-missing.Length+done:done,totalBodies>0?totalBodies:total),BuiltInCategory.OST_GenericModel,"Supplemental:"+kind,uniqueMarks:true);
                 report.Items.AddRange(stage.Items);report.Save(Path.Combine(folder,"checkpoint-report.json"));
+                committed=stage.Items.Any(i=>i.Status=="created");
                 if(!string.IsNullOrEmpty(doc.PathName))doc.Save();
             }
-            using var process=System.Diagnostics.Process.GetCurrentProcess();process.Refresh();
-            if(missing.Length>0 && process.PrivateMemorySize64>8L*1024*1024*1024)
+            processedBodies+=batchBodies;
+            if(totalBodies>0)progress?.Invoke("supplemental:"+sourceKind,processedBodies,totalBodies);
+            process.Refresh();
+            if(CheckpointPolicy.ShouldReopen(committed,initialMemory,process.PrivateMemorySize64))
                 throw new ImportCheckpointException("Дополнительная IFC-геометрия сохранена; требуется сброс истории и кэша Revit.");
         }
         return report;

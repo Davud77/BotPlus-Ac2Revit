@@ -1,7 +1,6 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
 using System.Text.Json;
-using System.Security.Cryptography;
 
 namespace Ac2Revit;
 
@@ -58,8 +57,7 @@ public static class CutBeamReplacer
         using var json=JsonDocument.Parse(File.ReadAllText(meshPath));var root=json.RootElement;string project=root.S("projectId");
         var coordinate=root.GetProperty("coordinates").Read<CoordinateInfo>().Transform;
         if(coordinate.RotationRadians!=0 || coordinate.Translation.X!=0 || coordinate.Translation.Y!=0 || coordinate.Translation.Z!=0)throw new InvalidDataException("Cut adapter currently requires identity coordinates");
-        using(var stream=File.OpenRead(root.S("ifcPath")))
-            if(!Convert.ToHexString(SHA256.HashData(stream)).Equals(root.S("ifcSha256"),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("IFC changed");
+        VerifiedReferenceScope.Verify(root.S("ifcPath"),root.S("ifcSha256"));
         var report=new Report{ProjectId=project,Mode="nativeCutBeams"};var index=Storage.Index(doc,project);Directory.CreateDirectory(folder);
         Family family;
         if(index.GetValueOrDefault("family:auto-rectangular-beam") is Family existingFamily)family=existingFamily;

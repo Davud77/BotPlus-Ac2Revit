@@ -145,10 +145,10 @@ def prepare(manifest_path, ifc_path, out, ifc_model=None, column_bodies_path=Non
                 except Exception as exc:row.update(status='deferred',reason=str(exc))
                 axes.append(row)
     ready=[a for a in axes if a['status']=='ready']
-    labels=collections.Counter(a['axisTag'] for a in ready)
     for a in ready:
-        # Never invent a bare name silently when separate grids repeat a label.
-        a['revitName']=a['axisTag'] if a['axisTag'] and labels[a['axisTag']]==1 else f'{a["axisTag"] or "Axis"} [IFC {a["gridGlobalId"][:8]} {a["group"][0]}{a["axisOrdinal"]+1}]'
+        # Revit resolves document-level uniqueness with invisible characters.
+        # The original visible label is never extended with an IFC identifier.
+        a['revitName']=a['axisTag']
         payload={'curve':a['curve'],'name':a['revitName'],'sourceLabel':a['axisTag'],'ifcGridGlobalId':a['gridGlobalId'],
                  'identityNote':a['identityNote']}
         selected.append({'sourceGuid':a['sourceGuid'],'kind':'Grid','levelKey':manifest['levels'][0]['key'],

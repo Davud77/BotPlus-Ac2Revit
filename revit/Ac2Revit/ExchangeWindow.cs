@@ -30,7 +30,7 @@ internal sealed class ExchangeWindow : Window
     bool busy;
     readonly bool build;
     readonly bool hasProject;
-    readonly string resumeSession;
+    string resumeSession;
     public string PipelinePath {get;private set;}="";
     public bool CreateNewProject=>newProject.IsChecked==true;
     public string TemplatePath=>template.Text.Trim();
@@ -62,7 +62,16 @@ internal sealed class ExchangeWindow : Window
         if(build)
         {
             newProject.IsEnabled=hasProject;top.Children.Add(newProject);
-            string preferred=ExchangeServices.ProjectTemplate(defaultTemplate);template.Text=File.Exists(preferred)?preferred:"";
+            string preferred=ExchangeServices.ProjectTemplate(defaultTemplate);
+            if(resumeSession.Length>0 && File.Exists(resumeSession))
+            {
+                using var saved=JsonDocument.Parse(File.ReadAllText(resumeSession));
+                // An explicit empty choice means a metric project. Preserve it,
+                // and let Export explain a missing template instead of silently
+                // substituting a different one after the memory handoff.
+                if(saved.RootElement.TryGetProperty("templatePath",out var selected))preferred=selected.GetString()??"";
+            }
+            template.Text=preferred;
             var target=new DockPanel{Margin=new Thickness(0,0,0,8)};DockPanel.SetDock(browse,Dock.Right);target.Children.Add(browse);target.Children.Add(template);top.Children.Add(target);
             top.Children.Add(new TextBlock{Text="Шаблон нового проекта: оставьте пустым для метрического проекта Revit. Для сопоставления штриховок используйте ваш архитектурный шаблон.",TextWrapping=TextWrapping.Wrap,FontSize=12,Margin=new Thickness(0,0,0,8)});
         }
@@ -95,6 +104,13 @@ internal sealed class ExchangeWindow : Window
         cancellation=new CancellationTokenSource();
         try
         {
+            if(resumeSession.Length>0 && File.Exists(Path.Combine(Path.GetDirectoryName(resumeSession)!,"capture.json")))
+            {
+                using var saved=JsonDocument.Parse(File.ReadAllText(resumeSession));connection=saved.RootElement.Clone();
+                var capturedProject=connection.Value.GetProperty("project");
+                source.Text=capturedProject.S("projectName")+"\nСохранённый снимок JSON + IFC. Archicad можно закрыть; контрольные суммы будут проверены перед подготовкой.";
+                Log("Автономное продолжение сохранённого захвата. Подключение к Archicad не требуется.");return;
+            }
             string result=Path.Combine(ExchangeServices.Sessions,"connection.json");Directory.CreateDirectory(ExchangeServices.Sessions);
             await ExchangeServices.RunAsync("revit_session.py",["probe","--port",number.ToString(),"--result",result],Log,cancellation.Token);
             using var parsed=JsonDocument.Parse(File.ReadAllText(result));connection=parsed.RootElement.Clone();
@@ -133,14 +149,21 @@ internal sealed class ExchangeWindow : Window
         {
             Log("Новый сеанс: "+session);
             await ExchangeServices.RunAsync("revit_session.py",args,line=>{lock(sync)journal.WriteLine(line);Log(line);},cancellation.Token);
-            PipelinePath=ExchangeServices.LastSession();
             using var state=JsonDocument.Parse(File.ReadAllText(Path.Combine(session,"session.json")));
-            if(!string.Equals(PipelinePath,Path.GetFullPath(state.RootElement.S("pipeline")),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Указатель последнего экспорта не совпал с текущим сеансом.");
             if(build && CreateNewProject)
             {
                 var saved=System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(session,"session.json")))!;
                 saved["templatePath"]=TemplatePath;File.WriteAllText(Path.Combine(session,"session.json"),saved.ToJsonString(Json.Options));
             }
+            if(state.RootElement.S("status")=="captured")
+            {
+                resumeSession=Path.Combine(session,"session.json");connection=state.RootElement.Clone();run.Content="Продолжить подготовку";
+                source.Text="Данные полностью захвачены. Для подготовки большой IFC-модели освободите память: закройте Archicad и ненужные модели Revit, затем нажмите «Продолжить подготовку».";
+                Log("Сохранённый снимок: "+resumeSession+". Предыдущий готовый сеанс не изменён.");return;
+            }
+            if(state.RootElement.S("status")!="ready")throw new InvalidDataException("Сеанс ещё не готов к сборке.");
+            PipelinePath=ExchangeServices.LastSession();
+            if(!string.Equals(PipelinePath,Path.GetFullPath(state.RootElement.S("pipeline")),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Указатель последнего экспорта не совпал с текущим сеансом.");
             DialogResult=true;
         }
         catch(OperationCanceledException)

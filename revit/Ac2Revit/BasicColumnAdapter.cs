@@ -3,8 +3,8 @@ using Autodesk.Revit.DB.Structure;
 
 namespace Ac2Revit;
 
-/// <summary>Opt-in native rectangular columns; every source must have a checked IFC prism.</summary>
-public sealed class BasicColumnAdapter(Document doc, ImportConfig config, Geometry geometry, RigidTransform transform, string project, Report report)
+/// <summary>IFC-calibrated rectangular columns by default; a separate marked mode checks API nominal geometry.</summary>
+public sealed class BasicColumnAdapter(Document doc, ImportConfig config, Geometry geometry, RigidTransform transform, string project, Report report,bool nominalOnly=false)
 {
     readonly Dictionary<string,FamilySymbol> types = new();
     static string Section(ElementRecord e) => Json.Hash(new{width=e.Payload.GetProperty("details").D("width"),depth=e.Payload.GetProperty("details").D("depth")});
@@ -13,7 +13,14 @@ public sealed class BasicColumnAdapter(Document doc, ImportConfig config, Geomet
         var p=e.Payload;var d=p.GetProperty("details");
         if(e.Status=="unsupported" || d.TryGetProperty("profileId",out _) || d.B("isSlanted") || d.B("circleBased") || d.B("wrapping") || d.S("coreAnchor")!="Center")
             throw new InvalidDataException("Automatic column adapter supports only centred unwrapped vertical rectangular sections");
-        if(!p.TryGetProperty("columnReference",out var reference) || reference.D("volumeM3")<=0)
+        if(nominalOnly)
+        {
+            foreach(string key in new[]{"axisRotationAngle","zCoordinate","width","depth","height"})
+                if(!d.TryGetProperty(key,out var value) || value.ValueKind!=System.Text.Json.JsonValueKind.Number || !double.IsFinite(value.GetDouble()))throw new InvalidDataException("Explicit finite nominal column parameter required: "+key);
+            foreach(string key in new[]{"isSlanted","circleBased","wrapping","isFlipped"})
+                if(!d.TryGetProperty(key,out var value) || value.ValueKind!=System.Text.Json.JsonValueKind.False)throw new InvalidDataException("Nominal fallback requires explicit unwrapped vertical unflipped rectangle: "+key);
+        }
+        if(!nominalOnly && (!p.TryGetProperty("columnReference",out var reference) || reference.D("volumeM3")<=0))
             throw new InvalidDataException("IFC prism calibration is required for automatic columns");
         if(new[]{d.D("width"),d.D("depth"),d.D("height")}.Any(v=>!double.IsFinite(v)||v<=0))throw new InvalidDataException("Invalid column dimensions");
     }
@@ -38,7 +45,7 @@ public sealed class BasicColumnAdapter(Document doc, ImportConfig config, Geomet
         report.Add(familyKey,"ColumnFamily","notice",string.Join("; ",first.Parameters.Cast<Parameter>().Where(p=>p.StorageType==StorageType.Double && p.Definition.GetDataType()==SpecTypeId.Length).Select(p=>p.Definition.Name)));
         foreach(var e in selected.GroupBy(Section).Select(g=>g.First()))
         {
-            Validate(e);var d=e.Payload.GetProperty("details");string name="AC2R "+Section(e)[..16];
+            Validate(e);var d=e.Payload.GetProperty("details");string name=(nominalOnly?"НЕПОЛНОЦЕННАЯ КОЛОННА ":"AC2R ")+Section(e)[..16];
             var symbol=family.GetFamilySymbolIds().Select(id=>(FamilySymbol)doc.GetElement(id)).SingleOrDefault(s=>s.Name==name) ?? (FamilySymbol)first.Duplicate(name);
             void Size(string parameterName,double meters)
             {
@@ -67,7 +74,7 @@ public sealed class BasicColumnAdapter(Document doc, ImportConfig config, Geomet
         var mp=instance.get_Parameter(BuiltInParameter.STRUCTURAL_MATERIAL_PARAM);
         if(mp==null || mp.IsReadOnly || !mp.Set(material.Id))throw new InvalidDataException("Column structural material unavailable");
         doc.Regenerate();CheckGeometry(instance,e);
-        report.Add(e.SourceGuid,"Column","geometryVerified","Native family solid bounds and volume match the prechecked IFC rectangular prism; this adapter excludes profiles/cuts/slants.",instance.UniqueId);
+        report.Add(e.SourceGuid,"Column",nominalOnly?"nominalGeometryVerified":"geometryVerified",nominalOnly?"Native rectangular prism checked against API nominal dimensions only; source net shape/cuts are not verified by IFC.":"Native family solid bounds and volume match the prechecked IFC rectangular prism; this adapter excludes profiles/cuts/slants.",instance.UniqueId);
         return instance;
     }
     void CheckGeometry(FamilyInstance instance,ElementRecord e)
@@ -82,6 +89,17 @@ public sealed class BasicColumnAdapter(Document doc, ImportConfig config, Geomet
         }
         Read(instance.get_Geometry(new Options{DetailLevel=ViewDetailLevel.Fine}));
         if(points.Count==0)throw new InvalidDataException("Native column has no solid geometry");
+        if(nominalOnly)
+        {
+            var d=e.Payload.GetProperty("details");var origin=d.GetProperty("origin").Read<Point>();origin.Z=d.D("zCoordinate");var center=geometry.Xyz(origin);
+            double angle=d.D("axisRotationAngle")+transform.RotationRadians;var x=new XYZ(Math.Cos(angle),Math.Sin(angle),0);var y=XYZ.BasisZ.CrossProduct(x);
+            var local=points.Select(p=>new XYZ((p-center).DotProduct(x),(p-center).DotProduct(y),p.Z-center.Z)).ToArray();
+            var nominalLo=new XYZ(-Geometry.Feet(d.D("width"))/2,-Geometry.Feet(d.D("depth"))/2,0);var nominalHi=new XYZ(-nominalLo.X,-nominalLo.Y,Geometry.Feet(d.D("height")));
+            var nominalActualLo=new XYZ(local.Min(p=>p.X),local.Min(p=>p.Y),local.Min(p=>p.Z));var nominalActualHi=new XYZ(local.Max(p=>p.X),local.Max(p=>p.Y),local.Max(p=>p.Z));
+            double nominalExpected=d.D("width")*d.D("depth")*d.D("height"),nominalActual=UnitUtils.ConvertFromInternalUnits(volume,UnitTypeId.CubicMeters);
+            if(nominalActualLo.DistanceTo(nominalLo)>Geometry.Feet(.001) || nominalActualHi.DistanceTo(nominalHi)>Geometry.Feet(.001) || Math.Abs(nominalActual-nominalExpected)>Math.Max(1e-6,nominalExpected*1e-5))throw new InvalidDataException("Native column differs from nominal API prism");
+            return;
+        }
         var reference=e.Payload.GetProperty("columnReference");var lo=reference.GetProperty("boundsMinMeters").Read<double[]>();var hi=reference.GetProperty("boundsMaxMeters").Read<double[]>();
         // Convert the IFC bounds only for identity/translation transforms. Rotated
         // world AABBs cannot be transformed as two corners without enlarging them.

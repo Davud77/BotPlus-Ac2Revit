@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botplus.local/ac2r/source-capture/1",
+  "title": "Verified Archicad source capture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "projectId", "sourceProject", "capturedUtc", "files", "hash"],
+  "properties": {
+    "format": {"const": "ac2r.source-capture/1"},
+    "projectId": {"type": "string", "format": "uuid"},
+    "sourceProject": {"type": "object", "required": ["projectPath"], "properties": {"projectPath": {"type": "string"}}},
+    "capturedUtc": {"type": "string", "format": "date-time"},
+    "sourcePlnSha256": {"$ref": "#/$defs/sha256"},
+    "hash": {"$ref": "#/$defs/sha256", "$comment": "Canonical SHA-256 of this object with the hash member omitted."},
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source/manifest.json", "source/snapshot.json", "source/export-report.json", "source/model.ifc", "separators.json", "separator-source/elements.json", "separator-source/export-report.json", "source-verification.json"],
+      "properties": {
+        "source/manifest.json": {"$ref": "#/$defs/sha256"},
+        "source/snapshot.json": {"$ref": "#/$defs/sha256"},
+        "source/export-report.json": {"$ref": "#/$defs/sha256"},
+        "source/model.ifc": {"$ref": "#/$defs/sha256"},
+        "separators.json": {"$ref": "#/$defs/sha256"},
+        "separator-source/elements.json": {"$ref": "#/$defs/sha256"},
+        "separator-source/export-report.json": {"$ref": "#/$defs/sha256"},
+        "source-verification.json": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

@@ -56,6 +56,156 @@ public static class RuntimeJobs
             var job = JsonSerializer.Deserialize<Job>(File.ReadAllText(sourceInbox), Json.Options) ?? throw new InvalidDataException("Empty runtime job");
             File.Move(sourceInbox, Path.Combine(Path.GetDirectoryName(sourceInbox)!, "job-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff")+".json"));
             resultPath = WorkspacePath(job.ResultPath);
+            if(job.Operation is "nominalColumnsCheckCopy" or "completeColumnsCopy")
+            {
+                string output=WorkspacePath(job.OutputRvt);if(File.Exists(output))throw new IOException("Nominal column output already exists");
+                var columnSource=Manifest.Load(WorkspacePath(job.ManifestPath));var settings=ImportConfig.Load(WorkspacePath(job.MappingPath));
+                if(job.Operation=="nominalColumnsCheckCopy")
+                {
+                    if(columnSource.Elements.Count>20 || columnSource.Elements.Any(e=>e.Kind!="Column"))throw new InvalidDataException("Column fixture accepts at most 20 columns");
+                    var fresh=ui.Application.NewProjectDocument(WorkspacePath(job.TemplatePath));fresh.SaveAs(output,new SaveAsOptions{MaximumBackups=1});fresh.Close(false);
+                }
+                else File.Copy(WorkspacePath(job.SourceRvt),output,false);
+                var document=ui.OpenAndActivateDocument(output).Document;
+                if(job.Operation=="nominalColumnsCheckCopy")new Importer(document,columnSource,settings).Run(new HashSet<string>(),true,false);
+                var before=Storage.Index(document,columnSource.Source.ProjectId);
+                string expectedReferenceSha="";
+                if(job.Operation=="completeColumnsCopy")
+                {
+                    if(before.GetValueOrDefault("pipeline-source-snapshot") is not Autodesk.Revit.DB.ExtensibleStorage.DataStorage snapshot)throw new InvalidDataException("Source snapshot tag missing");
+                    var schema=Storage.Schema();using var saved=JsonDocument.Parse(snapshot.GetEntity(schema).Get<string>(schema.GetField("RawJson")));
+                    using var stream=File.OpenRead(WorkspacePath(job.ManifestPath));string sha=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
+                    if(!sha.Equals(saved.RootElement.S("manifestSha"),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Column repair belongs to another source snapshot");
+                    expectedReferenceSha=saved.RootElement.S("referenceSha");
+                }
+                double Expected(ElementRecord e)
+                {var loops=e.Payload.GetProperty("loops").Read<List<List<Edge>>>();return Math.Abs(SourcePlanarGeometry.SignedArea(loops[0]))-loops.Skip(1).Sum(l=>Math.Abs(SourcePlanarGeometry.SignedArea(l)));}
+                double Area(Element e)=>e is Autodesk.Revit.DB.Architecture.Room room?UnitUtils.ConvertFromInternalUnits(room.Area,UnitTypeId.SquareMeters):0;
+                var accepted=columnSource.Elements.Where(e=>e.Kind=="Zone" && before.GetValueOrDefault(e.SourceGuid) is Autodesk.Revit.DB.Architecture.Room room && room.Area>0 && Math.Abs(Area(room)-Expected(e))<=settings.RoomAreaToleranceSquareMeters+1e-9).ToArray();
+                Report result;
+                using(var group=new TransactionGroup(document,"Add marked API-only columns without losing accepted rooms"))
+                {
+                    group.Start();result=NominalColumnStage.Run(document,columnSource,settings,Path.GetDirectoryName(output)!);
+                    var columnIndex=Storage.Index(document,columnSource.Source.ProjectId);
+                    if(accepted.Any(e=>columnIndex.GetValueOrDefault(e.SourceGuid) is not Autodesk.Revit.DB.Architecture.Room room || room.Area<=0 || Math.Abs(Area(room)-Expected(e))>settings.RoomAreaToleranceSquareMeters+1e-9))throw new InvalidDataException("Nominal columns would invalidate an accepted room; changes rolled back");
+                    if(result.Items.Any(i=>i.Status=="failed"))throw new InvalidDataException("Nominal column creation failed; see report");
+                    group.Assimilate();
+                }
+                result.Save(WorkspacePath(job.ReportPath));document.Save();
+                var after=Storage.Index(document,columnSource.Source.ProjectId);
+                if(job.OpeningsPlanPath.Length>0)
+                {
+                    if(job.Operation!="completeColumnsCopy")throw new InvalidDataException("Opening repairs require an existing verified source snapshot");
+                    string openingPath=WorkspacePath(job.OpeningsPlanPath);
+                    using(var openingPlan=JsonDocument.Parse(File.ReadAllText(openingPath)))
+                    {
+                        var sourceRows=columnSource.Elements.ToDictionary(e=>e.SourceGuid,StringComparer.OrdinalIgnoreCase);
+                        var plan=openingPlan.RootElement;
+                        if(!plan.S("projectId").Equals(columnSource.Source.ProjectId,StringComparison.OrdinalIgnoreCase) || !plan.S("ifcSha256").Equals(expectedReferenceSha,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Opening repair IFC/source differs from the saved snapshot");
+                        foreach(var row in plan.GetProperty("elements").EnumerateArray())
+                            if(!sourceRows.TryGetValue(row.S("sourceGuid"),out var sourceRow) || sourceRow.Kind is not ("Door" or "Window") || sourceRow.Kind!=row.S("kind") || Json.Hash(sourceRow.Raw)!=Json.Hash(row.GetProperty("rawSource")))throw new InvalidDataException("Opening repair changed the source identity or raw data");
+                    }
+                    using var references=new VerifiedReferenceScope();string previousCheckpoint="";
+                    for(int restart=0;;restart++)
+                    {
+                        string stageFolder=Path.Combine(Path.GetDirectoryName(output)!,"repair-fillings",$"pass-{restart:00}");
+                        try
+                        {
+                            var fillings=OpeningStage.Run(document,openingPath,WorkspacePath(job.TemplatePath),stageFolder,0,
+                                (phase,done,total)=>File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status="running",phase,done,total,seconds=timer.Elapsed.TotalSeconds},Json.Options)));
+                            result.Items.AddRange(fillings.Items);break;
+                        }
+                        catch(ImportCheckpointException)when(restart<32)
+                        {
+                            string checkpoint=Json.Hash(Storage.Index(document,columnSource.Source.ProjectId).Keys.OrderBy(k=>k,StringComparer.Ordinal).ToArray());
+                            if(checkpoint==previousCheckpoint)throw new InvalidDataException("Repair checkpoint made no progress; saved copy retained for diagnosis");
+                            previousCheckpoint=checkpoint;
+                            string partial=Path.Combine(stageFolder,"cut-report.json");
+                            if(File.Exists(partial))result.Items.AddRange(JsonSerializer.Deserialize<Report>(File.ReadAllText(partial),Json.Options)!.Items);
+                            result.Save(WorkspacePath(job.ReportPath));
+                            File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status="running",phase="repairMemoryCheckpoint",done=restart+1,total=32,seconds=timer.Elapsed.TotalSeconds},Json.Options));
+                            string parking=Path.Combine(Path.GetDirectoryName(output)!,"repair-parking-"+restart+".rvt");
+                            var temporary=ui.Application.NewProjectDocument(UnitSystem.Metric);temporary.SaveAs(parking,new SaveAsOptions{MaximumBackups=1});temporary.Close(false);
+                            var parked=ui.OpenAndActivateDocument(parking);document.Close(false);document=ui.OpenAndActivateDocument(output).Document;parked.Document.Close(false);
+                            GC.Collect();GC.WaitForPendingFinalizers();GC.Collect();
+                        }
+                    }
+                    after=Storage.Index(document,columnSource.Source.ProjectId);
+                    if(accepted.Any(e=>after.GetValueOrDefault(e.SourceGuid) is not Autodesk.Revit.DB.Architecture.Room room || room.Area<=0 || Math.Abs(Area(room)-Expected(e))>settings.RoomAreaToleranceSquareMeters+1e-9))throw new InvalidDataException("Opening repair invalidated an accepted room; baseline remains unchanged, repair copy requires review");
+                }
+                if(job.MeshKeysPath.Length>0)result.Items.AddRange(GridLabelStage.Run(document,Manifest.Load(WorkspacePath(job.MeshKeysPath))).Items);
+                result.Items.AddRange(ServiceCutsStage.Run(document,columnSource.Source.ProjectId).Items);
+                result.Save(WorkspacePath(job.ReportPath));document.Save();
+                int columns=columnSource.Elements.Count(e=>e.Kind=="Column" && after.ContainsKey(e.SourceGuid));
+                File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status="completeWithIssues",output,columns,preservedAcceptedRooms=accepted.Length,outcomes=result.Items.GroupBy(i=>i.Status).ToDictionary(g=>g.Key,g=>g.Count()),seconds=timer.Elapsed.TotalSeconds},Json.Options));return;
+            }
+            if(job.Operation=="zeroThicknessCheckCopy")
+            {
+                string output=WorkspacePath(job.OutputRvt);if(File.Exists(output))throw new IOException("Zero-thickness fixture output already exists");
+                var input=Manifest.Load(WorkspacePath(job.ManifestPath));var settings=ImportConfig.Load(WorkspacePath(job.MappingPath));
+                if(input.Elements.Count>20 || input.Elements.Any(e=>e.Kind is not ("Zone" or "Wall")))throw new InvalidDataException("Fixture accepts at most 20 walls/zones");
+                var created=ui.Application.NewProjectDocument(WorkspacePath(job.TemplatePath));created.SaveAs(output,new SaveAsOptions{MaximumBackups=1});created.Close(false);
+                var document=ui.OpenAndActivateDocument(output).Document;
+                var resources=new Importer(document,input,settings).Run(new HashSet<string>(),true,false);
+                var first=WallCompletion.Run(document,input,null,Path.Combine(Path.GetDirectoryName(output)!,"first"));
+                var second=WallCompletion.Run(document,input,null,Path.Combine(Path.GetDirectoryName(output)!,"repeat"));
+                if(first.Items.Concat(second.Items).Any(i=>i.Status=="failed"))throw new InvalidDataException("Zero-thickness fixture failed; see stage reports");
+                var rooms=new Importer(document,input,settings).Run(new HashSet<string>{"Zone"},false,false);
+                if(rooms.ZoneAreas.Count!=input.Elements.Count(e=>e.Kind=="Zone") || rooms.ZoneAreas.Any(a=>!a.Accepted))throw new InvalidDataException("Zero-thickness boundaries did not enclose expected native rooms");
+                var index=Storage.Index(document,input.Source.ProjectId);int sheets=input.Elements.Count(e=>SourceZeroThicknessWall.IsCandidate(e) && index.GetValueOrDefault(e.SourceGuid) is DirectShape shape && shape.ApplicationId==ZeroThicknessWallStage.ApplicationId);
+                int boundaries=index.Count(p=>p.Key.StartsWith("zero-wall-separator:") && p.Value is ModelCurve);
+                int walls=input.Elements.Count(e=>e.Kind=="Wall" && index.GetValueOrDefault(e.SourceGuid) is DirectShape);
+                if(walls!=input.Elements.Count(e=>e.Kind=="Wall") || sheets!=input.Elements.Count(SourceZeroThicknessWall.IsCandidate) || second.Items.Any(i=>i.Status=="created"))throw new InvalidDataException("Zero-thickness fixture missing walls/sheets or duplicated boundaries");
+                first.Items.AddRange(second.Items);first.Items.AddRange(rooms.Items);first.ZoneAreas.AddRange(rooms.ZoneAreas);first.Save(WorkspacePath(job.ReportPath));document.Save();
+                File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status="completeWithIssues",output,walls,sheets,boundaries,rooms=rooms.ZoneAreas,repeatCreated=second.Items.Count(i=>i.Status=="created"),seconds=timer.Elapsed.TotalSeconds},Json.Options));return;
+            }
+            if(job.Operation=="repairPresentationCopy")
+            {
+                string output=WorkspacePath(job.OutputRvt);if(File.Exists(output))throw new IOException("Repair output already exists");
+                File.Copy(WorkspacePath(job.SourceRvt),output,false);var document=ui.OpenAndActivateDocument(output).Document;
+                var original=Manifest.Load(WorkspacePath(job.ManifestPath));var repair=new Report{ProjectId=original.Source.ProjectId,Mode="ownedPresentationAndMissingSlabs"};
+                if(job.MeshManifestPath.Length>0)
+                {
+                    var patch=Manifest.Load(WorkspacePath(job.MeshManifestPath));
+                    if(patch.Source.ProjectId!=original.Source.ProjectId || patch.Elements.Any(e=>e.Kind!="Slab"))throw new InvalidDataException("Repair accepts source-owned missing slabs only");
+                    var originals=original.Elements.ToDictionary(e=>e.SourceGuid,StringComparer.OrdinalIgnoreCase);
+                    foreach(var row in patch.Elements)
+                        if(!originals.TryGetValue(row.SourceGuid,out var before) || before.Kind!="Slab" || Json.Hash(row.Raw)!=Json.Hash(before.Raw))throw new InvalidDataException("Slab repair changed the raw source");
+                    var settings=ImportConfig.Load(WorkspacePath(job.MappingPath));settings.ConnectWalls=false;
+                    var slabs=new Importer(document,patch,settings).Run(new HashSet<string>{"Slab"},false,false);repair.Items.AddRange(slabs.Items);
+                    if(job.ReferenceGeometryPath.Length>0)
+                    {
+                        using var reference=JsonDocument.Parse(File.ReadAllText(WorkspacePath(job.ReferenceGeometryPath)));
+                        if(reference.RootElement.S("projectId")!=original.Source.ProjectId)throw new InvalidDataException("Slab geometry project differs");
+                        VerifiedReferenceScope.Verify(WorkspacePath(reference.RootElement.S("ifcPath")),reference.RootElement.S("ifcSha256"));
+                        var index=Storage.Index(document,original.Source.ProjectId);
+                        foreach(var row in reference.RootElement.GetProperty("elements").EnumerateArray())
+                        {
+                            string key=row.S("sourceGuid");
+                            try
+                            {
+                                if(index.GetValueOrDefault(key) is not Floor floor)throw new InvalidDataException("Repaired native floor missing");
+                                var points=row.GetProperty("vertices").Read<List<Point>>().Select(NativeGeometry.At).ToList();
+                                var center=new XYZ(points.Average(p=>p.X),points.Average(p=>p.Y),points.Average(p=>p.Z));
+                                var local=Transform.CreateTranslation(center.Negate());
+                                var expected=NativeGeometry.MeshSolids(row,local);var actual=NativeGeometry.Solids(floor).Select(s=>SolidUtils.CreateTransformed(s,local)).ToList();
+                                NativeGeometry.VerifySolids(actual,expected);
+                                repair.Add(key,"SlabGeometry","verified","Нативное перекрытие сверено с IFC в обоих направлениях булевой разности, допуск 1e-6 м³.",floor.UniqueId);
+                            }
+                            catch(Exception ex){repair.Add(key,"SlabGeometry","incomplete","Перекрытие по точным полям API создано; проверка полного IFC-тела не пройдена: "+ex.Message);}
+                        }
+                    }
+                }
+                if(job.OpeningsPlanPath.Length>0)
+                {
+                    var fillings=OpeningStage.Run(document,WorkspacePath(job.OpeningsPlanPath),WorkspacePath(job.TemplatePath),Path.Combine(Path.GetDirectoryName(output)!,"repair-fillings"));repair.Items.AddRange(fillings.Items);
+                }
+                var labels=GridLabelStage.Run(document,Manifest.Load(WorkspacePath(job.MeshKeysPath)));repair.Items.AddRange(labels.Items);
+                var cuts=ServiceCutsStage.Run(document,original.Source.ProjectId);repair.Items.AddRange(cuts.Items);
+                repair.Save(WorkspacePath(job.ReportPath));document.Save();
+                File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status=repair.Items.Any(i=>i.Status is "failed" or "blocked" or "revitError" or "incomplete")?"completeWithIssues":"complete",output,seconds=timer.Elapsed.TotalSeconds,
+                    outcomes=repair.Items.GroupBy(i=>i.Status).ToDictionary(g=>g.Key,g=>g.Count()),floors=new FilteredElementCollector(document).OfClass(typeof(Floor)).GetElementCount()},Json.Options));return;
+            }
             if(job.Operation=="modelPreview")
             {
                 string source=WorkspacePath(job.SourceRvt),folder=Path.GetDirectoryName(WorkspacePath(job.ReportPath))!;Directory.CreateDirectory(folder);
@@ -155,13 +305,23 @@ public static class RuntimeJobs
                     File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status="running",phase,done,total,seconds=timer.Elapsed.TotalSeconds},Json.Options)));
                 File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status="complete",audit,seconds=timer.Elapsed.TotalSeconds},Json.Options));return;
             }
+            if(job.Operation=="openingsCheckCopy")
+            {
+                string output=WorkspacePath(job.OutputRvt);if(File.Exists(output))throw new IOException("Opening check output already exists");
+                File.Copy(WorkspacePath(job.SourceRvt),output,false);var document=ui.OpenAndActivateDocument(output).Document;
+                var openingReport=OpeningStage.Run(document,WorkspacePath(job.ManifestPath),WorkspacePath(job.TemplatePath),Path.Combine(Path.GetDirectoryName(output)!,"opening-families"),0,
+                    (phase,done,total)=>File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status="running",phase,done,total},Json.Options)));
+                openingReport.Save(WorkspacePath(job.ReportPath));document.Save();
+                File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status=openingReport.Items.Any(i=>i.Status is "blocked" or "incomplete" or "failed" or "revitError")?"completeWithIssues":"complete",output,
+                    seconds=timer.Elapsed.TotalSeconds,outcomes=openingReport.Items.GroupBy(i=>i.Status).ToDictionary(g=>g.Key,g=>g.Count())},Json.Options));return;
+            }
             if(job.Operation=="pipelineCopy")
             {
                 string output=WorkspacePath(job.OutputRvt);
                 if(File.Exists(output))throw new IOException("Pipeline output already exists");
                 if(string.IsNullOrEmpty(job.SourceRvt))
                 {
-                    var created=ui.Application.NewProjectDocument(WorkspacePath(job.TemplatePath));created.SaveAs(output,new SaveAsOptions{OverwriteExistingFile=false,MaximumBackups=2});created.Close(false);
+                    var created=ui.Application.NewProjectDocument(WorkspacePath(job.TemplatePath));created.SaveAs(output,new SaveAsOptions{OverwriteExistingFile=false,MaximumBackups=1});created.Close(false);
                 }
                 else File.Copy(WorkspacePath(job.SourceRvt),output,false);
                 var document=ui.OpenAndActivateDocument(output).Document;
@@ -170,7 +330,7 @@ public static class RuntimeJobs
                 document=ui.ActiveUIDocument.Document;pipelineReport.Save(WorkspacePath(job.ReportPath));document.Save();
                 var view=new FilteredElementCollector(document).OfClass(typeof(View3D)).Cast<View3D>().First(v=>v.Name=="AC Complete Model");ui.ActiveUIDocument.RequestViewChange(view);
                 int Count(BuiltInCategory c)=>new FilteredElementCollector(document).OfCategory(c).WhereElementIsNotElementType().GetElementCount();
-                File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status=pipelineReport.Items.Any(r=>r.Status is "blocked" or "failed" or "retained" or "revitError")?"completeWithIssues":"complete",output,seconds=timer.Elapsed.TotalSeconds,
+                File.WriteAllText(resultPath,JsonSerializer.Serialize(new{status=pipelineReport.Items.Any(r=>r.Status is "blocked" or "failed" or "retained" or "revitError" or "unsupported" or "partial" or "incomplete")?"completeWithIssues":"complete",output,seconds=timer.Elapsed.TotalSeconds,
                     outcomes=pipelineReport.Items.GroupBy(r=>r.Status).ToDictionary(g=>g.Key,g=>g.Count()),grids=new FilteredElementCollector(document).OfClass(typeof(Grid)).GetElementCount(),
                     columns=Count(BuiltInCategory.OST_StructuralColumns),beams=Count(BuiltInCategory.OST_StructuralFraming),doors=Count(BuiltInCategory.OST_Doors),windows=Count(BuiltInCategory.OST_Windows),rooms=Count(BuiltInCategory.OST_Rooms)},Json.Options));return;
             }
@@ -369,6 +529,8 @@ public static class RuntimeJobs
         public string MeshManifestPath { get; set; } = "";
         public string ReferenceIFCPath { get; set; } = "";
         public string ReferenceIFCSha256 { get; set; } = "";
+        public string ReferenceGeometryPath {get;set;}="";
+        public string OpeningsPlanPath {get;set;}="";
         public string GeometryCategory { get; set; } = "walls";
         public string MappingPath {get;set;}="";
         public int Limit {get;set;}

@@ -1,6 +1,5 @@
 using Autodesk.Revit.DB;
 using System.Text.Json;
-using System.Security.Cryptography;
 
 namespace Ac2Revit;
 
@@ -11,8 +10,7 @@ public static class ReferenceFallback
     {
         using var json=JsonDocument.Parse(File.ReadAllText(meshManifest));var root=json.RootElement;
         string project=root.GetProperty("projectId").GetString()!,ifcHash=root.GetProperty("ifcSha256").GetString()!;
-        using(var stream=File.OpenRead(workspacePath(root.GetProperty("ifcPath").GetString()!)))
-            if(!Convert.ToHexString(SHA256.HashData(stream)).Equals(ifcHash,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Reference IFC changed");
+        VerifiedReferenceScope.Verify(workspacePath(root.GetProperty("ifcPath").GetString()!),ifcHash);
         var records=(root.TryGetProperty("elements",out var recordsProperty)?recordsProperty:root.GetProperty("walls")).EnumerateArray().ToList();
         var keys=records.Select(r=>r.GetProperty("sourceGuid").GetString()!).ToList();
         if(keys.Count!=keys.Distinct(StringComparer.OrdinalIgnoreCase).Count())throw new InvalidDataException("Duplicate source GUIDs");

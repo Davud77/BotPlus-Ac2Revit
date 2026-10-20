@@ -11,7 +11,7 @@ import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'exporter'))
 from ac2r.jsonio import write_json, file_sha256, canonical_digest
-from prepare_column_bodies import prepare, body_products
+from prepare_column_bodies import prepare as prepare_bodies, body_products
 from source_ifc import SourceIfcIndex
 
 
@@ -62,10 +62,10 @@ def prepare(args,ifc_model=None):
                             meshes[shape.id]=(np.array(shape.geometry.verts).reshape(-1,3),np.array(shape.geometry.faces,dtype=int).reshape(-1,3))
                             if not iterator.next():break
                     del iterator
-                result=prepare(args.manifest,args.ifc,folder,kind=kind,keys=source_keys,ifc_model=model,frame=frame,manifest=m,identities=identities,ifc_sha=ifc_sha,meshes=meshes)
+                result=prepare_bodies(args.manifest,args.ifc,folder,kind=kind,keys=source_keys,ifc_model=model,frame=frame,manifest=m,identities=identities,ifc_sha=ifc_sha,meshes=meshes)
                 del meshes
             summary.update(result['statuses'])
-            batches.append({'kind':kind,'path':str((folder/(kind.lower()+'-bodies.json')).resolve())})
+            batches.append({'kind':kind,'path':str((folder/(kind.lower()+'-bodies.json')).resolve()),'bodyCount':result['statuses'].get('extracted',0)})
             write_json(args.out/'preparation-progress.json',{'kind':kind,'done':min(n+100,len(keys)),'total':len(keys),'outcomes':dict(summary)})
             print(kind,min(n+100,len(keys)),'/',len(keys),dict(summary),flush=True)
     plan={'format':'ac2r.supplemental/1','projectId':m['source']['projectId'],'sourceManifest':str(args.manifest.resolve()),

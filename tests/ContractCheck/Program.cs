@@ -1,5 +1,66 @@
 using Ac2Revit;
 
+var zeroWall=new ElementRecord{Kind="Wall",Raw=System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>("""
+{"details":{"geometryType":"Straight","structureType":"Basic","profileType":"Normal","begThickness":0,"endThickness":0,"arcAngle":0,"offset":0,"zCoordinate":8.4,"height":3.3,"zoneRel":"Boundary","begCoordinate":{"x":-350,"y":-966},"endCoordinate":{"x":-350,"y":-965.8}}}
+""")};
+var zero=SourceZeroThicknessWall.Read(zeroWall);
+if(!zero.RoomBoundary || Math.Abs(zero.Height-3.3)>1e-9 || zero.Curve.Start.Z!=8.4)throw new Exception("Zero-thickness source geometry changed");
+foreach(string replacement in new[]{"\"begThickness\":0.001","\"begThickness\":-0.001","\"absentThickness\":0"})
+{
+    var other=new ElementRecord{Kind="Wall",Raw=System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(zeroWall.Raw.GetRawText().Replace("\"begThickness\":0",replacement))};
+    if(SourceZeroThicknessWall.IsCandidate(other))throw new Exception("Nonzero/missing thickness treated as a zero-width boundary");
+}
+Console.WriteLine("PASS: zero-thickness source classification preserves axis/height and rejects missing/nonzero width");
+
+long gb=1024L*1024*1024;
+if(CheckpointPolicy.ShouldReopen(false,7*gb,10*gb))throw new Exception("Rejected bodies must not trigger a reopen");
+if(CheckpointPolicy.ShouldReopen(true,9*gb,9*gb))throw new Exception("High baseline without growth must not loop");
+if(!CheckpointPolicy.ShouldReopen(true,7*gb,9*gb))throw new Exception("Committed growth must checkpoint");
+if(!CheckpointPolicy.ShouldReopen(true,9*gb,10*gb))throw new Exception("Growth after an already high baseline must checkpoint");
+Console.WriteLine("PASS: checkpoint progress and memory-growth guards");
+var gridNames=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+foreach(string label in new[]{"1*","1*","Н*","Н*","A","a"})
+{
+    string name=GridLabels.Unique(label,gridNames);
+    if(GridLabels.Visible(name)!=label || name.Contains("IFC"))throw new Exception("Visible source grid label changed");
+}
+if(gridNames.Count!=6)throw new Exception("Duplicate visible grid labels were lost");
+Console.WriteLine("PASS: repeated grid labels remain visually identical and internally unique");
+var slabScope=new ImportSelection(["Slab"]);
+if(!slabScope.AllowsStage("wallsSlabsMorphs") || slabScope.AllowsStage("wallCompletion") || slabScope.AllowsStage("wallJoinsAndRooms"))throw new Exception("Slab scope leaked into walls/rooms");
+if(!slabScope.IncludesType("Floor") || slabScope.IncludesType("Wall"))throw new Exception("Unselected host types leaked into resources");
+var windowScope=new ImportSelection(["Window"]);
+if(!windowScope.Includes("Wall") || windowScope.Includes("Door") || windowScope.Includes("Zone"))throw new Exception("Window dependencies differ from the declared scope");
+var voidScope=new ImportSelection(["Opening"],[("Opening","Slab"),("Opening","Beam")]);
+if(!voidScope.Includes("Slab") || !voidScope.Includes("Beam") || voidScope.Includes("Object"))throw new Exception("Explicit opening hosts were not included precisely");
+var roomScope=new ImportSelection(["Zone"]);
+if(!roomScope.Includes("Column") || !roomScope.Includes("Wall") || roomScope.Includes("Object"))throw new Exception("Spatial dependency scope is incorrect");
+try{_ =new ImportSelection([]);throw new Exception("Empty selection accepted");}catch(InvalidDataException){}
+Console.WriteLine("PASS: category selection and physical host dependencies");
+
+string referenceFile=Path.GetTempFileName();
+try
+{
+    File.WriteAllText(referenceFile,"original IFC fixture");
+    string hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(referenceFile)));
+    using(var scope=new VerifiedReferenceScope())
+    {
+        VerifiedReferenceScope.Verify(referenceFile,hash);
+        VerifiedReferenceScope.Verify(referenceFile,hash.ToLowerInvariant());
+        using(var reader=File.OpenRead(referenceFile))if(reader.Length==0)throw new Exception("Concurrent reference readers must work");
+        try{using var writer=File.Open(referenceFile,FileMode.Open,FileAccess.Write,FileShare.ReadWrite);throw new Exception("Reference writes allowed during verified lease");}
+        catch(IOException){}
+        try{VerifiedReferenceScope.Verify(referenceFile,new string('0',64));throw new Exception("Conflicting expected hash accepted");}
+        catch(InvalidDataException){}
+    }
+    File.WriteAllText(referenceFile,"changed after lease released");
+    try{VerifiedReferenceScope.Verify(referenceFile,hash);throw new Exception("Changed file accepted by a new scope");}
+    catch(InvalidDataException){}
+    File.WriteAllText(referenceFile,"reopened after failed verification");
+}
+finally{File.Delete(referenceFile);}
+Console.WriteLine("PASS: reference lease allows readers, blocks writes, rejects conflicting/changed inputs and releases handles");
+
 Point P(double x,double y)=>new(){X=x,Y=y};
 void Near(double actual,double expected,double tolerance=1e-9)
 {if(Math.Abs(actual-expected)>tolerance)throw new Exception($"Source analytic area {actual:G17} != {expected:G17}");}

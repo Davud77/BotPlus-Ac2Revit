@@ -528,7 +528,8 @@ public sealed class Importer
             case "Grid":
                 var gridCurve=geometry.Curve(p.GetProperty("curve").Read<Edge>(),0);
                 var grid=gridCurve is Line line?Grid.Create(doc,line):Grid.Create(doc,(Arc)gridCurve);
-                grid.Name=p.S("name");
+                var occupiedGridNames=new FilteredElementCollector(doc).OfClass(typeof(Grid)).Cast<Grid>().Where(g=>g.Id!=grid.Id).Select(g=>g.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                grid.Name=GridLabels.Unique(p.S("sourceLabel",p.S("name")),occupiedGridNames);
                 grid.SetVerticalExtents(levels.Values.Min(l=>l.Elevation)-Geometry.Feet(1),levels.Values.Max(l=>l.Elevation)+Geometry.Feet(1));
                 result=grid;break;
             case "Wall":

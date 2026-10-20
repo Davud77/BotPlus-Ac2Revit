@@ -60,12 +60,19 @@ public static class Command
         Importer? importer = null;
         try
         {
+            ImportSelection? selection=null;
+            if(!preview)
+            {
+                var choice=new ImportSelectionWindow(ui.MainWindowHandle,path);
+                if(choice.ShowDialog()!=true)return Result.Cancelled;
+                selection=choice.Selection;
+            }
             if(PipelineRunner.IsPipeline(path))
             {
                 string output=Path.Combine(folder,"revit-run-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff"));
                 using var display=preview?null:new ImportProgress(ui.MainWindowHandle);
                 var pipelineReport=PipelineExecution.Run(ui,path,output,
-                    progress:(phase,done,total)=>{File.WriteAllText(Path.Combine(output,"progress.json"),System.Text.Json.JsonSerializer.Serialize(new{phase,done,total,updatedUtc=DateTime.UtcNow},Json.Options));display?.Update(phase,done,total);},preview:preview);
+                    progress:(phase,done,total)=>{File.WriteAllText(Path.Combine(output,"progress.json"),System.Text.Json.JsonSerializer.Serialize(new{phase,done,total,updatedUtc=DateTime.UtcNow},Json.Options));display?.Update(phase,done,total);},preview:preview,selection:selection);
                 if(preview)Directory.CreateDirectory(output);
                 pipelineReport.Save(Path.Combine(output,"pipeline-report.json"));
                 string counts=string.Join("\n",pipelineReport.Items.GroupBy(x=>x.Status).Select(g=>g.Key+": "+g.Count()));
@@ -73,9 +80,10 @@ public static class Command
                 return Result.Succeeded;
             }
             var manifest = Manifest.Load(path);
+            if(selection!=null)manifest.Types=manifest.Types.Where(t=>selection.IncludesType(t.Kind)).ToList();
             var config = ImportConfig.Load(Path.Combine(folder, "mapping.json"));
             importer = new Importer(ui.ActiveUIDocument.Document, manifest, config);
-            var report = preview ? importer.Preview() : importer.Run();
+            var report = preview ? importer.Preview() : importer.Run(selection?.Included);
             report.Save(reportPath);
             string summary = string.Join("\n", report.Items.GroupBy(x => x.Status).Select(g => g.Key + ": " + g.Count()));
             TaskDialog.Show("Archicad JSON", summary + "\n\nОтчёт: " + reportPath);

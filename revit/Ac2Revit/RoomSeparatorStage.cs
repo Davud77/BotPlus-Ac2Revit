@@ -164,8 +164,13 @@ public static class RoomSeparatorStage
                     {
                         if(existing is not ModelCurve curve || curve.Category.Id!=new ElementId(BuiltInCategory.OST_RoomSeparationLines)
                             || Storage.Read(curve)?.Hash!=hash || index.GetValueOrDefault(StateKey(row.Segment.Key)) is not DataStorage savedState
-                            || Storage.Read(savedState)?.Hash!=hash || !SnapshotMatches(savedState,curve.GeometryCurve,plan.RevitToleranceMeters,curve.UniqueId))
+                            || Storage.Read(savedState)?.Hash!=hash || Metadata(savedState).S("nativeElementUniqueId")!=curve.UniqueId)
                             throw new InvalidDataException("Existing native separator changed; no overwrite: "+row.Segment.Key);
+                        if(!SnapshotMatches(savedState,curve.GeometryCurve,plan.RevitToleranceMeters,curve.UniqueId))
+                        {
+                            if(plan.NativeCleanupPolicy=="strict")throw new InvalidDataException("Existing native separator changed; no overwrite: "+row.Segment.Key);
+                            report.Add(row.Segment.Key,"RoomSeparator","incomplete","Фактическая нативная кривая изменилась после предыдущего измерения. Геометрия сохранена без перезаписи; причина изменения не устанавливается. Новое измерение принимается отдельно от точной исходной 2D-ссылки.",curve.UniqueId);
+                        }
                         line=curve;report.Add(row.Segment.Key,"RoomSeparator","unchanged","Native snapshot and source hash verified",line.UniqueId);
                     }
                     else
@@ -204,7 +209,7 @@ public static class RoomSeparatorStage
                     {
                         differences++;foreach(var r in row.Segment.SourceRefs)partialSources.Add(r.SourceGuid);
                         if(plan.NativeCleanupPolicy=="strict")throw new InvalidOperationException("Native separator differs: "+row.Segment.Key);
-                        string note=$"НЕПОЛНОЦЕННЫЙ РАЗДЕЛИТЕЛЬ — автостыковка Revit; отклонение исходной кривой до {deviation*1000:G8} мм. Точная 2D ссылка — AC Source separators. Проверка площади помещения отдельная.";
+                        string note=$"НЕПОЛНОЦЕННЫЙ РАЗДЕЛИТЕЛЬ — нативная кривая отличается от исходной до {deviation*1000:G8} мм. Точная 2D ссылка — AC Source separators. Геометрия сохранена; проверка площади помещения отдельная.";
                         report.Add(row.Segment.Key,"RoomSeparator","incomplete",note,line.UniqueId);
                     }
                     // Changing an existing separator's parameters retriggers wall cleanup in Revit.
@@ -212,7 +217,9 @@ public static class RoomSeparatorStage
                     string stateKey=StateKey(row.Segment.Key);
                     var state=index.GetValueOrDefault(stateKey) as DataStorage;
                     if(state==null){state=DataStorage.Create(doc);index.Add(stateKey,state);}
+                    var previous=Storage.Read(state)==null?(JsonElement?)null:Metadata(state);
                     Storage.Tag(state,project,stateKey,Json.Hash(row.Segment),JsonSerializer.Serialize(new{segment=row.Segment,sources=row.Segment.SourceRefs.Select(r=>source[r.SourceGuid]),
+                        previousNativePointsMeters=previous?.GetProperty("nativePointsMeters"),
                         nativeElementUniqueId=line.UniqueId,transferStatus=matches?"verified":"nativeAdjusted",nativePointsMeters=actual,sourceDeviationMeters=deviation,sourceReferenceKey=ReferenceKey(row.Segment.Key)},Json.Options));
                     finalChecks.Add(new{key=row.Segment.Key,sourceRefs=row.Segment.SourceRefs,status=matches?"verified":"nativeAdjusted",sourceDeviationMeters=deviation,
                         actualPointsMeters=actual,referenceElementId=reference.Id.Value,referenceDeviationMeters=refDeviation});

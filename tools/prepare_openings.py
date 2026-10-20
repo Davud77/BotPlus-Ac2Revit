@@ -16,7 +16,7 @@ from ifc_coordinates import infer_frame, apply_frame
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def prepare(out,limit=0,manifest_path=None,ifc_path=None,ifc_model=None,frame=None):
+def prepare(out,limit=0,manifest_path=None,ifc_path=None,ifc_model=None,frame=None,keys=None):
     import ifcopenshell
     import ifcopenshell.geom
     if manifest_path is None or ifc_path is None:
@@ -68,18 +68,43 @@ def prepare(out,limit=0,manifest_path=None,ifc_path=None,ifc_model=None,frame=No
                 'yMin':float(lo[2]),'yMax':float(hi[2]),'width':float(hi[0]-lo[0]),'height':float(hi[1]-lo[1]),
                 'ifcGlobalId':obj.GlobalId,'hostGuid':wall['sourceGuid'],'mode':mode,
                 'volumeM3':sum(p['approximateVolumeM3'] for p in g['parts'])}
-    selected=[e for e in m['elements'] if e['kind'] in ('Door','Window')]
+    selected=[e for e in m['elements'] if e['kind'] in ('Door','Window','Opening') and (keys is None or e['sourceGuid'].upper() in keys)]
     if limit:selected=selected[:limit]
     records,checks=[],[];used_voids=set()
     for i,e in enumerate(selected):
         row={'sourceGuid':e['sourceGuid'],'kind':e['kind'],'levelKey':e['levelKey'],'mark':e['mark'],
              'rawSource':e['raw'],'payload':e['payload']}
         try:
+            if e['kind']=='Opening':
+                matches=identities.matches(e)
+                if len(matches)!=1 or not matches[0].is_a('IfcOpeningElement'):raise ValueError('Source opening has no unique explicit IFC opening identity')
+                opening=matches[0]
+                hosts=[identities.source_guid(r.RelatingBuildingElement) for r in opening.VoidsElements]
+                if len(hosts)!=1 or not hosts[0] or hosts[0] not in source:raise ValueError('Source opening has no unique explicit source host')
+                if opening.id() in used_voids:raise ValueError('Source opening void is already assigned to another source record')
+                row.update(hostGuid=hosts[0],emptyOpening=True,ifcGlobalId=opening.GlobalId,voidGeometry=mesh(opening),
+                           opening=dict(mode='void',hostGuid=hosts[0],ifcGlobalId=opening.GlobalId),status='ready',
+                           identityMethod='Explicit source opening identity and unique IfcRelVoidsElement source host')
+                used_voids.add(opening.id());records.append(row)
+                checks.append({k:row[k] for k in ('sourceGuid','kind','status')});continue
             row['hostGuid']=e['payload']['hostGuid']
             wall=source[row['hostGuid']];matches=identities.matches(e)
             if len(matches)>1:raise ValueError('Ambiguous IFC filling Tag')
             if matches:
-                obj=matches[0];rels=list(obj.FillsVoids)
+                obj=matches[0]
+                row['ifcClass']=obj.is_a()
+                if obj.is_a('IfcBuildingElementProxy'):
+                    # Some Archicad IFC translators emit library doors/windows as
+                    # neutral proxies. The exact source identity supplies their
+                    # category; the independently checked void relation supplies
+                    # any cut. Never accept a different semantic IFC class here.
+                    row['classificationAdaptation']='Exact Archicad '+e['kind']+' identity; IFC neutral IfcBuildingElementProxy retained in source category'
+                elif not obj.is_a('Ifc'+e['kind']):raise ValueError('Explicit IFC filling identity has a different element class')
+                # Filling identity/shape is independent of its cutting relation.
+                # Preserve it even when a native void cannot be proven.
+                row.update(mesh(obj));row['ifcGlobalId']=obj.GlobalId
+                row['identityMethod']='Unique explicit source IFC filling identity; void relation checked separately'
+                rels=list(obj.FillsVoids)
                 if len(rels)!=1:raise ValueError('Filling has no unique IFC void relation')
                 opening=rels[0].RelatingOpeningElement
                 hosts=[identities.source_guid(r.RelatingBuildingElement) for r in opening.VoidsElements]
@@ -103,7 +128,8 @@ def prepare(out,limit=0,manifest_path=None,ifc_path=None,ifc_model=None,frame=No
                 row['identityMethod']='Exact source host GUID plus unique full rectangular void geometry within 1 mm; not an original IFC Tag match'
             if opening.id() in used_voids:raise ValueError('Two source records would use the same IFC void')
             used_voids.add(opening.id());row['voidGeometry']=mesh(opening);row['status']='ready'
-        except Exception as exc:row.update(status='blocked',reason=str(exc))
+        except Exception as exc:
+            row.update(status='fillingOnly' if e['kind'] in ('Door','Window') and 'vertices' in row else 'blocked',reason=str(exc))
         records.append(row);checks.append({k:row[k] for k in ('sourceGuid','kind','status','reason') if k in row})
         if (i+1)%100==0:print('Openings',i+1,'/',len(selected),flush=True)
     out.mkdir(parents=True,exist_ok=False)
@@ -112,6 +138,8 @@ def prepare(out,limit=0,manifest_path=None,ifc_path=None,ifc_model=None,frame=No
     summary={'source':len(records),'statuses':dict(collections.Counter(r['status'] for r in records)),
              'emptyReady':sum(r.get('emptyOpening',False) and r['status']=='ready' for r in records),
              'physicalReady':dict(collections.Counter(r['kind'] for r in records if r['status']=='ready' and not r.get('emptyOpening'))),
+             'physicalFillingOnly':dict(collections.Counter(r['kind'] for r in records if r['status']=='fillingOnly')),
+             'neutralProxyFillings':dict(collections.Counter(r['kind'] for r in records if r.get('classificationAdaptation') and r['status'] in ('ready','fillingOnly'))),
              'blockedReasons':dict(collections.Counter(r['reason'] for r in records if r['status']=='blocked'))}
     (out/'preflight.json').write_text(json.dumps({'summary':summary,'elements':checks},ensure_ascii=False,indent=2),encoding='utf-8')
     return summary

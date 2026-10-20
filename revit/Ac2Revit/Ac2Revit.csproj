@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RevitInstallDir Condition="'$(RevitInstallDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitInstallDir>
     <AssemblyName>Ac2Revit</AssemblyName>
-    <Version>0.45.0</Version>
+    <Version>0.46.7</Version>
     <Product>BotPlus Ac2Revit</Product>
     <Description>Deterministic Archicad to Revit translator</Description>
   </PropertyGroup>

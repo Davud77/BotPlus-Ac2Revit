@@ -10,7 +10,7 @@ from ac2r.client import aligned, ApiError
 from ac2r.normalize import normalize, guid
 
 
-PROJECT = '5e5a43ba-b71f-4cf1-9eb4-bcb98248b8fc'
+PROJECT = '11111111-2222-4333-8444-555555555555'
 WALL = '37D734D9-543B-409A-94A6-B5E0AA0E1888'
 
 
@@ -25,6 +25,27 @@ def snapshot():
 
 
 class PipelineTests(unittest.TestCase):
+    def slab(self,ref='CoreTop',offset=0):
+        s=snapshot();s['elements']=[dict(sourceGuid=WALL,type='Slab',floorIndex=5,id='S',details=dict(
+            structureType='Composite',thickness=.3,zCoordinate=12.15,referencePlaneLocation=ref,offsetFromTop=offset,
+            compositeId=dict(guid=WALL),polygonOutline=[dict(x=x,y=y) for x,y in [(0,0),(4,0),(4,3),(0,3)]]))]
+        s['attributes']['Composite']=dict(details=[dict(attributeId=dict(guid=WALL),name='No core',skins=[dict(type='Other',thickness=.3)])])
+        return s
+
+    def test_slab_without_core_uses_explicit_api_top_distance(self):
+        e=normalize(self.slab(offset=.07),PROJECT)['elements'][0]
+        self.assertEqual(e['status'],'ready');self.assertAlmostEqual(e['payload']['topOffset'],.07)
+
+    def test_slab_invalid_or_contradictory_top_distance_is_not_guessed(self):
+        for ref,offset in [('CoreTop',float('nan')),('CoreTop',-.1),('CoreTop',.4),('Top',.1),('Bottom',0)]:
+            with self.subTest(ref=ref,offset=offset):
+                s=self.slab(ref,offset)
+                # NaN input cannot enter a manifest at all; finite contradictions
+                # are retained as explicit unsupported records.
+                if not math.isfinite(offset):
+                    with self.assertRaises(ValueError):normalize(s,PROJECT)
+                else:self.assertEqual(normalize(s,PROJECT)['elements'][0]['status'],'unsupported')
+
     def test_hatch_and_pen_definitions_survive_normalization(self):
         s=snapshot();fill={'attributeId':{'guid':WALL},'subType':'Symbol','symbolArcs':[{'angle':math.pi}],'scaleWithPlan':True}
         table={'isActiveForModel':True,'pens':[{'index':168,'color':{'red':1,'green':0.5,'blue':0}}]}

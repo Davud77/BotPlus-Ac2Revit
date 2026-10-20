@@ -114,8 +114,22 @@ def normalize(snapshot, project_id):
                     shift = sum(s['width'] for s in layers[:core[0]])
                 elif core and ref == 'CoreBottom':
                     shift = sum(s['width'] for s in layers[:core[-1]+1])
+                elif ref in ('CoreTop','CoreBottom'):
+                    shift = None
                 else:
-                    raise ValueError('Unknown slab reference plane or missing core')
+                    raise ValueError('Unknown slab reference plane')
+                # API_SlabType.offsetFromTop is the authoritative output distance
+                # from the reference plane to the physical top. It is also valid
+                # for composites whose skins have no Core designation.
+                if 'offsetFromTop' in d:
+                    actual = float(d['offsetFromTop'])
+                    if not math.isfinite(actual) or actual < -1e-6 or actual > width+1e-6:
+                        raise ValueError('Invalid slab offsetFromTop')
+                    if shift is not None and abs(actual-shift)>1e-6:
+                        raise ValueError('Slab offsetFromTop disagrees with reference plane/layers')
+                    shift = actual
+                if shift is None:
+                    raise ValueError('Slab core reference needs offsetFromTop or designated core')
                 # Tapir zCoordinate is the reference plane; Revit floor offset uses its top.
                 top = float(d['zCoordinate']) + shift
                 e['payload'] = {'loops': loops(d, top), 'typeKey': key, 'topOffset': top-level}

@@ -20,8 +20,10 @@ public static class RoomBoundaryAudit
             var flags=e.Parameters.Cast<Parameter>().Where(p=>p.Id.Value<0 && ((BuiltInParameter)p.Id.Value).ToString().Contains("ROOM_BOUNDING"))
                 .ToDictionary(p=>((BuiltInParameter)p.Id.Value).ToString(),p=>p.StorageType==StorageType.Integer?p.AsInteger().ToString():p.AsValueString()??"");
             var box=e.get_BoundingBox(null);
+            string sourceKey=Storage.Read(e)?.Key??"";string owner=sourceKey;
+            if(sourceKey.StartsWith("zero-wall-separator:",StringComparison.Ordinal))owner=sourceKey.Split(':')[1];
             return new{id=e.Id.Value,sourceGuid=Storage.Read(e)?.Key??"",elementClass=e.GetType().Name,category=e.Category?.Name,name=e.Name,
-                roomBounding=flags,min=box==null?null:At(box.Min),max=box==null?null:At(box.Max)};
+                sourceOwnerGuid=owner,roomBounding=flags,min=box==null?null:At(box.Min),max=box==null?null:At(box.Max)};
         }
         foreach(var area in selected)
         {

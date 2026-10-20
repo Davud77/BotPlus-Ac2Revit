@@ -93,6 +93,18 @@ def export(args):
         if response:
             for elem_id, relation in aligned(response, 'relations', batch):
                 by_id[guid(elem_id['elementId'])]['relations'] = relation
+    # Zones expose actual source boundary owners and wall-part intervals. These
+    # are essential evidence when a Revit room is split by a different wall.
+    # Omitting otherElementType requests all supported relation types; a Wall
+    # filter here would lose columns, beams and curtain-wall boundaries.
+    related_ids = [i for i in ids if by_id[guid(i['elementId'])].get('type') in
+                   ('Zone', 'Beam', 'Door', 'Window', 'Roof', 'Shell', 'Skylight')]
+    for batch in chunks(related_ids, args.batch):
+        response = optional('GetRelationsOfElements', {'elements': batch})
+        if response:
+            for elem_id, relation in aligned(response, 'relations', batch):
+                by_id[guid(elem_id['elementId'])]['relations'] = relation
+    print('Source relations:', len(wall_ids), 'walls;', len(related_ids), 'spatial/hosted/structural elements', flush=True)
     for i, batch in enumerate(chunks(ids, args.metadata_batch)):
         if args.properties:
             available = optional('GetAllPropertyIdsOfElements', {'elements': batch}, tapir=False)
@@ -150,6 +162,13 @@ def export(args):
               'properties': args.properties, 'propertyScope': args.property_scope, 'gdl': args.gdl, 'ifc': args.ifc,
               'gdlStorage': 'archivedResponsesWithSha256References',
               'snapshotConsistency': 'document/story checked; element edits are not locked'}
+    report['relationCoverage'] = {}
+    for kind in ('Wall', 'Zone', 'Beam', 'Door', 'Window', 'Roof', 'Shell', 'Skylight'):
+        rows = [e for e in snapshot['elements'] if e.get('type') == kind]
+        retrieved = sum(isinstance(e.get('relations'), dict) and 'error' not in e['relations'] for e in rows)
+        errors = sum(isinstance(e.get('relations'), dict) and 'error' in e['relations'] for e in rows)
+        report['relationCoverage'][kind] = {'expected': len(rows), 'retrieved': retrieved,
+                                          'errors': errors, 'missing': len(rows)-retrieved-errors}
     write_json(target/'export-report.json', report)
     # Populate mapping inventory without guessing equivalent Revit families.
     inventory = {}
@@ -170,7 +189,7 @@ def main():
     p.add_argument('--project-id', required=True, help='Stable user-managed UUID, retained when the PLN moves')
     p.add_argument('--batch', type=int, default=100)
     p.add_argument('--property-batch', type=int, default=100)
-    p.add_argument('--metadata-batch', type=int, default=20)
+    p.add_argument('--metadata-batch', type=int, default=100)
     p.add_argument('--property-scope', choices=['custom', 'all'], default='custom')
     p.add_argument('--resume', action='store_true', help='Reuse archived responses; only with an unchanged source model')
     p.add_argument('--timeout', type=int, default=180)

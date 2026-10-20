@@ -1,7 +1,6 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
 using System.Text.Json;
-using System.Security.Cryptography;
 
 namespace Ac2Revit;
 
@@ -38,8 +37,7 @@ public static class ExtrudedColumnReplacer
         var transform=root.GetProperty("coordinates").Read<CoordinateInfo>().Transform;
         if(transform.RotationRadians!=0 || transform.Translation.X!=0 || transform.Translation.Y!=0 || transform.Translation.Z!=0)
             throw new InvalidDataException("Profile replacement currently requires the checked identity coordinate transform");
-        using(var stream=File.OpenRead(root.GetProperty("ifcPath").GetString()!))
-            if(!Convert.ToHexString(SHA256.HashData(stream)).Equals(root.S("ifcSha256"),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Reference IFC changed");
+        VerifiedReferenceScope.Verify(root.GetProperty("ifcPath").GetString()!,root.S("ifcSha256"));
         var columns=root.GetProperty("columns").Read<List<Column>>();
         if(columns.Count!=columns.Select(c=>c.SourceGuid).Distinct(StringComparer.OrdinalIgnoreCase).Count())throw new InvalidDataException("Duplicate column GUID in plan");
         var index=Storage.Index(doc,project);var report=new Report{ProjectId=project,Mode="nativeExtrudedColumnsCopy"};

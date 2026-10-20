@@ -2,4 +2,9 @@
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
   <ItemGroup><Compile Include="../../revit/Ac2Revit/Contract.cs" Link="Contract.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../revit/Ac2Revit/SourcePlanarGeometry.cs" Link="SourcePlanarGeometry.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../revit/Ac2Revit/CheckpointPolicy.cs" Link="CheckpointPolicy.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../revit/Ac2Revit/VerifiedReferenceScope.cs" Link="VerifiedReferenceScope.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../revit/Ac2Revit/GridLabels.cs" Link="GridLabels.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../revit/Ac2Revit/ImportSelection.cs" Link="ImportSelection.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../revit/Ac2Revit/SourceZeroThicknessWall.cs" Link="SourceZeroThicknessWall.cs" /></ItemGroup>
 </Project>

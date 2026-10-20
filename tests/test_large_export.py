@@ -69,6 +69,43 @@ class LargeJsonTests(unittest.TestCase):
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_zone_relations_keep_boundary_intervals_and_errors_without_wall_filter(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); source = snapshot(); calls = []
+            source['elements'] += [dict(sourceGuid='ZONE', type='Zone', floorIndex=5, details={}),
+                                   dict(sourceGuid='DOOR', type='Door', floorIndex=5, details={})]
+            ids = [{'elementId': {'guid': e['sourceGuid']}} for e in source['elements']]
+            by_id = {e['sourceGuid']: e for e in source['elements']}
+            relation = {'zoneRelations': {'wallParts': [{'elementId': {'guid': WALL},
+                'roomEdgeIndex': 7, 'begDistance': .2, 'endDistance': 2.7}],
+                'elementsGroupedByType': [{'elementType': 'Column', 'elements': [{'elementId': {'guid': 'COLUMN'}}]}]}}
+            class Api:
+                def call(self, name, params=None, **kwargs):
+                    if name == 'GetStories': return source['stories']
+                    if name == 'GetAllElements': return {'elements': ids}
+                    if name == 'GetElementsByType': return {'elements': [i for i in ids if by_id[i['elementId']['guid']]['type'] == params['elementType']]}
+                    if name == 'GetDetailsOfElements': return {'detailsOfElements': [by_id[i['elementId']['guid']] for i in params['elements']]}
+                    if name == 'GetIFCIdsOfElements': return {'elementIFCIds': [{} for _ in params['elements']]}
+                    if name == 'GetRelationsOfElements':
+                        calls.append(params)
+                        return {'relations': [relation if i['elementId']['guid'] == 'ZONE' else
+                            {'error': {'code': -1, 'message': 'No source relation'}} if i['elementId']['guid'] == 'DOOR' else
+                            {'wallConnections': {}} for i in params['elements']]}
+                    return {}
+            args = argparse.Namespace(output=folder, port=19723, timeout=10, resume=False, include_2d=False,
+                limit=None, batch=100, metadata_batch=100, property_scope='custom', properties=False,
+                gdl=False, ifc=False, project_id=PROJECT)
+            with patch('ac2r.export.TapirClient', return_value=Api()), patch('builtins.print'):
+                export(args)
+            result = json.loads((folder/'manifest.json').read_text(encoding='utf-8'))
+            zone = next(e for e in result['elements'] if e['sourceGuid'] == 'ZONE')
+            self.assertEqual(zone['raw']['relations'], relation)
+            self.assertEqual(calls[0]['otherElementType'], 'Wall')
+            self.assertNotIn('otherElementType', calls[1])
+            coverage = json.loads((folder/'export-report.json').read_text())['relationCoverage']
+            self.assertEqual(coverage['Zone'], dict(expected=1, retrieved=1, errors=0, missing=0))
+            self.assertEqual(coverage['Door'], dict(expected=1, retrieved=0, errors=1, missing=0))
+
     def fixture(self, folder, terminal=True):
         (folder/'raw').mkdir()
         source = snapshot()
@@ -183,9 +220,11 @@ class RecoveryTests(unittest.TestCase):
     def test_changed_geometry_is_rejected_before_missing_ifc_can_be_created(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp); data = snapshot()
+            data['project']={'projectPath':'source.pln'}
             write_json(folder/'snapshot.json', data)
             write_json(folder/'manifest.json', {'elements': [{'sourceGuid': WALL, 'raw': data['elements'][0]}]})
             def call(name, params=None, **kwargs):
+                if name == 'GetProjectInfo': return data['project']
                 if name == 'GetStories': return data['stories']
                 if name == 'GetElementsByType': return {'elements': [{'elementId': {'guid': WALL}}] if params['elementType'] == 'Wall' else []}
                 if name == 'GetDetailsOfElements':

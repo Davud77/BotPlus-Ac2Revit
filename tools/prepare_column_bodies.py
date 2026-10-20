@@ -38,7 +38,7 @@ def prepare(manifest_path,ifc_path,out,kind='Column',keys=None,ifc_model=None,fr
     m=manifest if manifest is not None else json.loads(manifest_path.read_text(encoding='utf-8'));model=ifc_model if ifc_model is not None else ifcopenshell.open(str(ifc_path))
     identities=identities or SourceIfcIndex(m,model)
     frame=frame or infer_frame(m,model,identities)
-    if kind not in ('Column','Beam','Wall','Object','Roof','Shell','Mesh','Morph','Stair','Railing','CurtainWall','Skylight','Lamp'):raise ValueError('Unsupported physical kind')
+    if kind not in ('Column','Beam','Wall','Slab','Object','Roof','Shell','Mesh','Morph','Stair','Railing','CurtainWall','Skylight','Lamp'):raise ValueError('Unsupported physical kind')
     settings=ifcopenshell.geom.settings();settings.set('use-world-coords',True);settings.set('mesher-linear-deflection',0.00025)
     rows,checks=[],[]
     source=[e for e in m['elements'] if e['kind']==kind and (keys is None or e['sourceGuid'].upper() in keys)]
@@ -91,7 +91,7 @@ def prepare(manifest_path,ifc_path,out,kind='Column',keys=None,ifc_model=None,fr
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--manifest',type=Path,required=True)
     p.add_argument('--ifc',type=Path,required=True)
-    p.add_argument('--kind',choices=['Column','Beam','Wall'],default='Column')
+    p.add_argument('--kind',choices=['Column','Beam','Wall','Slab'],default='Column')
     p.add_argument('--keys-file',type=Path)
     p.add_argument('--out',type=Path,required=True);a=p.parse_args()
     from ifc_reader_wait import wait_for_reader

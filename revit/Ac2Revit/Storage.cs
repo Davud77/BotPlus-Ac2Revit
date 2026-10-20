@@ -18,6 +18,7 @@ public static class Storage
     }
     public static void Tag(Element e, string project, string key, string hash, string raw = "")
     {
+        project=Guid.Parse(project).ToString("D");
         var schema = Schema(); var entity = new Entity(schema);
         entity.Set(schema.GetField("ProjectId"), project); entity.Set(schema.GetField("SourceKey"), key);
         entity.Set(schema.GetField("SourceHash"), hash); entity.Set(schema.GetField("RawJson"), raw);
@@ -38,7 +39,7 @@ public static class Storage
         foreach (var e in new FilteredElementCollector(doc).WherePasses(new ExtensibleStorageFilter(Id)))
         {
             var tag = Read(e);
-            if (tag.HasValue && tag.Value.Project == project && !result.TryAdd(tag.Value.Key, e))
+            if (tag.HasValue && string.Equals(tag.Value.Project,project,StringComparison.OrdinalIgnoreCase) && !result.TryAdd(tag.Value.Key, e))
                 throw new InvalidOperationException("Duplicate imported source key in Revit: " + tag.Value.Key);
         }
         return result;

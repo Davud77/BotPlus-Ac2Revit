@@ -63,6 +63,19 @@ class SessionTests(unittest.TestCase):
             other=folder/'Other.pln';other.write_bytes(b'source')
             self.assertNotEqual(session.project_identity({'projectPath':str(other)},registry),first)
 
+    def test_successful_continuation_clears_obsolete_failure_fields(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);folder,state=self.saved_session(root)
+            state.update(status='failed',error='old failure',errorType='TypeError',phase='geometry-preparation')
+            (folder/'session.json').write_text(json.dumps(state),encoding='utf-8')
+            args=argparse.Namespace(session=folder,port=19723,assets=root/'assets')
+            info={'projectId':'wanted','project':{'projectPath':'source.pln'}}
+            with patch.object(session,'ROOT',root),patch.object(session,'probe',return_value=info),patch('export_room_separators.extract'),patch.object(session,'write_separator_plan'),patch.object(session,'prepare_pipeline'):
+                session.continue_session(args)
+            ready=json.loads((folder/'session.json').read_text())
+            self.assertEqual(ready['status'],'ready')
+            for key in ('error','errorType','phase'):self.assertNotIn(key,ready)
+
     def test_unsaved_source_is_rejected(self):
         with self.assertRaisesRegex(ValueError,'PLN'):session.project_identity({})
 

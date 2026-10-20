@@ -29,6 +29,9 @@ public static class WallCompletion
             node["elements"]=new JsonArray(rows);string filtered=Path.Combine(output,"missing-wall-bodies.json");File.WriteAllText(filtered,node.ToJsonString());
             var result=ReferenceFallback.Run(doc,filtered,Path.GetFullPath,(n,total)=>progress?.Invoke("wallGeometry",n,total));report.Items.AddRange(result.Items);
         }
+        // Exact IFC bodies take precedence over the nominal API sheet. Only
+        // absent bodies may receive that explicitly incomplete substitute.
+        var zero=ZeroThicknessWallStage.Run(doc,manifest,Path.Combine(output,"zero-width-walls"),progress);report.Items.AddRange(zero.Items);
         index=Storage.Index(doc,project);
         // Last resort allowed by the user: a nominal prism, never presented as
         // faithful profile geometry. Exact IFC bodies always take precedence.
@@ -37,7 +40,7 @@ public static class WallCompletion
             using var t=new Transaction(doc,"Marked nominal wall substitute");
             try
             {
-                t.Start();var d=record.Raw.GetProperty("details");
+                t.Start();NativeGeometry.Configure(t,report,record.SourceGuid,"WallGeometry");var d=record.Raw.GetProperty("details");
                 if(d.S("geometryType","Straight")!="Straight" || Math.Abs(d.D("arcAngle"))>1e-9)throw new InvalidDataException("Nominal straight prism unavailable");
                 var g=new Geometry(doc,manifest.Coordinates.Transform);double z=d.D("zCoordinate"),h=d.D("height"),width=d.D("begThickness");
                 var a=d.GetProperty("begCoordinate").Read<Point>();a.Z=z;var b=d.GetProperty("endCoordinate").Read<Point>();b.Z=z;
@@ -46,6 +49,18 @@ public static class WallCompletion
                 double half=Geometry.Feet(width)/2;string line=d.S("referenceLineLocation","Center");
                 double centre=line is "Outside" or "CoreOutside"?-half:line is "Inside" or "CoreInside"?half:0;
                 centre+=Geometry.Feet(d.D("offset"));start+=right*centre;end+=right*centre;
+                if(Geometry.Feet(width)<doc.Application.ShortCurveTolerance)
+                {
+                    XYZ[] sheet=[start,end,end+XYZ.BasisZ*Geometry.Feet(h),start+XYZ.BasisZ*Geometry.Feet(h)];
+                    var surface=DirectShape.CreateElement(doc,new ElementId(BuiltInCategory.OST_Walls));surface.SetShape(ZeroThicknessWallStage.BuildSheet(sheet));
+                    surface.ApplicationId="Ac2Revit.NominalWallFallback";surface.ApplicationDataId=record.SourceGuid;
+                    surface.Name=Incomplete+" — приближённая поверхность тонкой стены";
+                    surface.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)?.Set(Incomplete+": исходная толщина "+width.ToString("G9",System.Globalization.CultureInfo.InvariantCulture)+" м меньше геометрического допуска Revit. Только номинальная срединная поверхность; объём, слои, подрезки, проёмы и Room Bounding не перенесены. GUID "+record.SourceGuid);
+                    surface.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)?.Set(record.Mark);
+                    Storage.Tag(surface,project,record.SourceGuid,"nominal-wall-sheet:"+record.ContentHash,record.Raw.GetRawText());doc.Regenerate();ZeroThicknessWallStage.Verify(surface,sheet);
+                    if(t.Commit()!=TransactionStatus.Committed)throw new InvalidOperationException("Thin-wall surface rolled back");
+                    report.Add(record.SourceGuid,"WallGeometry","approximate",Incomplete+": nominal mid-surface only; source thickness below Revit geometry tolerance, no volume or room-boundary guarantee",surface.UniqueId);continue;
+                }
                 var points=new[]{start+right*half,end+right*half,end-right*half,start-right*half};
                 var loop=CurveLoop.Create(Enumerable.Range(0,4).Select(i=>(Curve)Line.CreateBound(points[i],points[(i+1)%4])).ToList());
                 var solid=GeometryCreationUtilities.CreateExtrusionGeometry([loop],XYZ.BasisZ,Geometry.Feet(h));
@@ -63,7 +78,7 @@ public static class WallCompletion
         index=Storage.Index(doc,project);
         using(var t=new Transaction(doc,"Label incomplete wall representations"))
         {
-            t.Start();foreach(var record in walls)
+            t.Start();NativeGeometry.Configure(t,report,"wall-labels","WallGeometry");foreach(var record in walls)
             {
                 if(index.GetValueOrDefault(record.SourceGuid) is Wall native)
                 {
@@ -80,7 +95,7 @@ public static class WallCompletion
                     }
                     continue;
                 }
-                if(index.GetValueOrDefault(record.SourceGuid) is not DirectShape shape || shape.ApplicationId=="Ac2Revit.NominalWallFallback")continue;
+                if(index.GetValueOrDefault(record.SourceGuid) is not DirectShape shape || shape.ApplicationId is "Ac2Revit.NominalWallFallback" or ZeroThicknessWallStage.ApplicationId)continue;
                 shape.Name=Incomplete+" — геометрия IFC";
                 Annotate(shape.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS),Incomplete+": геометрия IFC; не нативная стена Revit. Нет редактируемых слоёв/привязок и гарантии Room Bounding. GUID "+record.SourceGuid+". Причина: "+record.Reason);
                 report.Add(record.SourceGuid,"WallGeometry","incomplete",Incomplete+": IFC tessellation retained; native wall functionality unavailable",shape.UniqueId);

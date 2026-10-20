@@ -33,3 +33,4 @@
 - [Архитектура](docs/ARCHITECTURE.md)
 - [План развития и критерии готовности](docs/ROADMAP.md)
 - [JSON-контракт элементов](contracts/manifest.schema.json) и [контракт сборки](contracts/pipeline.schema.json)
+- [Контракт проверенного снимка для автономной подготовки](contracts/source-capture.schema.json)

@@ -1,7 +1,6 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
 using System.Text.Json;
-using System.Security.Cryptography;
 
 namespace Ac2Revit;
 
@@ -47,8 +46,7 @@ public static class RectangularBeamReplacer
         string project=root.S("projectId");var coordinate=root.GetProperty("coordinates").Read<CoordinateInfo>().Transform;
         if(coordinate.RotationRadians!=0 || coordinate.Translation.X!=0 || coordinate.Translation.Y!=0 || coordinate.Translation.Z!=0)
             throw new InvalidDataException("Beam calibration currently requires identity coordinates");
-        using(var stream=File.OpenRead(root.S("ifcPath")))
-            if(!Convert.ToHexString(SHA256.HashData(stream)).Equals(root.S("ifcSha256"),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("IFC changed");
+        VerifiedReferenceScope.Verify(root.S("ifcPath"),root.S("ifcSha256"));
         var beams=root.GetProperty("beams").Read<List<Beam>>();
         if(beams.Count!=beams.Select(b=>b.SourceGuid).Distinct(StringComparer.OrdinalIgnoreCase).Count())throw new InvalidDataException("Duplicate beam source GUID");
         var index=Storage.Index(doc,project);var report=new Report{ProjectId=project,Mode="nativeRectangularBeamsCopy"};

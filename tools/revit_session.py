@@ -24,13 +24,14 @@ from ac2r.jsonio import file_sha256
 
 def error_message(exc):
     if isinstance(exc, MemoryError):
-        return 'Недостаточно памяти Python при обработке модели. Прочитанные ответы API сохранены в source/raw; подробности в failure.txt.'
+        return str(exc) or 'Недостаточно памяти Python при обработке модели. Прочитанные ответы API сохранены в source/raw; подробности в failure.txt.'
     return str(exc) or type(exc).__name__
 
 
 def verify_source_geometry(manifest_path, api):
     """Before creating a missing IFC, verify every exported physical element."""
     from export_room_separators import same_source
+    before_manifest=file_sha256(manifest_path)
     with manifest_path.open(encoding='utf-8') as stream:
         manifest = json.load(stream)
     with (manifest_path.parent/'snapshot.json').open(encoding='utf-8') as stream:
@@ -54,6 +55,8 @@ def verify_source_geometry(manifest_path, api):
                 details.extend(api.call(command, {'attributeIds': batch}).get(result_key, []))
             if not same_source(attr.get('details', []), details):
                 raise ValueError('Изменены исходные конструкции/материалы '+kind+'. Нужен новый экспорт.')
+    source_project=snapshot['project']
+    if api.call('GetProjectInfo')!=source_project:raise ValueError('Source project changed before geometry verification')
     del snapshot
     print('Исходные этажи, конструкции и атрибуты сверены', flush=True)
     expected = {e['sourceGuid'].upper(): e['raw'] for e in manifest['elements']}
@@ -76,6 +79,10 @@ def verify_source_geometry(manifest_path, api):
                 raise ValueError('Исходная геометрия изменена: '+key+'. Нужен новый экспорт.')
         if index % 25 == 0:
             print('Сверка исходной геометрии:', min((index+1)*100, len(ids)), '/', len(ids), flush=True)
+    if api.call('GetProjectInfo')!=source_project or file_sha256(manifest_path)!=before_manifest:
+        raise ValueError('Source project/manifest changed during geometry verification')
+    return dict(complete=True,projectId=manifest['source']['projectId'],sourceProject=source_project,manifestSha256=before_manifest,
+                counts=dict(collections.Counter(e['kind'] for e in manifest['elements'])))
 
 
 def export_ifc(api, project, translator, ifc_path):
@@ -204,7 +211,7 @@ def run(args):
     phase = 'json-export'
     try:
         export_args = argparse.Namespace(output=str(session/'source'), port=args.port, timeout=180,
-            resume=False, include_2d=False, limit=None, batch=100, metadata_batch=20,
+            resume=False, include_2d=False, limit=None, batch=100, metadata_batch=100,
             property_batch=100, property_scope='custom', properties=args.properties, gdl=getattr(args,'gdl',False), ifc=False,
             project_id=args.project_id)
         export(export_args)
@@ -218,9 +225,22 @@ def run(args):
         print('Чтение исходных границ помещений', flush=True)
         extract(manifest_path, Path(args.project_path), session/'separator-source', port=args.port)
         write_separator_plan(session/'separator-source/elements.json', manifest_path, session/'separators.json')
+        phase='source-capture'
+        write_json(session/'source-verification.json',verify_source_geometry(manifest_path,api))
+        from source_capture import seal,verify,memory_budget
+        capture=seal(session,info)
+        budget=memory_budget(ifc_path)
+        if budget['defer']:
+            manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+            state=dict(format='ac2r.session/1',status='captured',**info,selectedTranslator=args.translator,
+                captureHash=capture['hash'],memoryBudget=budget,manifest=str(manifest_path),
+                counts=dict(collections.Counter(e['kind'] for e in manifest['elements'])))
+            write_json(session/'session.json',state)
+            print('Исходные JSON, IFC и границы полностью захвачены. Закройте Archicad и нажмите «Продолжить сеанс»: подготовка проверенного снимка выполняется без подключения к Archicad.',flush=True)
+            return state
         phase = 'geometry-preparation'
         prepare_pipeline(session, manifest_path, ifc_path, args.assets.resolve())
-        if api.call('GetProjectInfo') != info['project']: raise ValueError('Source changed during preparation')
+        verify(session)
         manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
         state = dict(format='ac2r.session/1', status='ready', **info,
             completedUtc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -266,6 +286,7 @@ def _continue_session(args):
     state_path=session/'session.json'
     state=json.loads(state_path.read_text(encoding='utf-8-sig'))
     if state.get('format')!='ac2r.session/1':raise ValueError('Выберите session.json сеанса транслятора')
+    if (session/'capture.json').is_file():return prepare_captured_session(session,args.assets.resolve())
     manifest_path=session/'source/manifest.json';ifc_path=session/'source/model.ifc'
     report=json.loads((session/'source/export-report.json').read_text(encoding='utf-8'))
     if report.get('complete') is not True:
@@ -312,7 +333,7 @@ def _continue_session(args):
             manifestSha256=before_manifest,ifcSha256=before_ifc,preparedFromExistingFiles=True,
             completedUtc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             counts=dict(collections.Counter(e['kind'] for e in manifest['elements'])))
-        state.pop('error',None)
+        for obsolete in ('error','errorType','phase'):state.pop(obsolete,None)
         write_json(attempt/'attempt.json',{'status':'ready','sourceManifestSha256':before_manifest,'ifcSha256':before_ifc})
         write_json(state_path,state)
         write_json(ROOT/'artifacts/sessions/last-completed.json',{'session':str(state_path)})
@@ -321,6 +342,58 @@ def _continue_session(args):
         write_json(attempt/'attempt.json',{'status':'failed','error':error_message(exc),'errorType':type(exc).__name__,'sourceManifestSha256':before_manifest,'ifcSha256':before_ifc})
         (attempt/'failure.txt').write_text(traceback.format_exc(),encoding='utf-8')
         raise
+
+
+def prepare_captured_session(session,assets):
+    """Offline continuation is permitted only for a sealed, unchanged capture."""
+    from source_capture import verify,memory_budget
+    session=Path(session).resolve()
+    if not session.is_relative_to(ROOT/'artifacts/sessions'):raise ValueError('Session is outside the exchange folder')
+    capture=verify(session);state_path=session/'session.json'
+    state=json.loads(state_path.read_text(encoding='utf-8-sig'))
+    if state['projectId']!=capture['projectId'] or state['project']!=capture['sourceProject']:raise ValueError('Captured session project mismatch')
+    budget=memory_budget(session/'source/model.ifc')
+    if budget['defer']:raise MemoryError(f"Недостаточно доступной памяти для IFC: оценка {budget['requiredBytes']/1024**3:.1f} ГиБ, доступно {budget['availableCommitBytes']/1024**3:.1f} ГиБ. Закройте Archicad и другие большие модели; захват данных сохранён.")
+    attempt=session/('prepared-offline-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S%f'));attempt.mkdir()
+    manifest_path=session/'source/manifest.json';ifc_path=session/'source/model.ifc'
+    write_json(attempt/'attempt.json',dict(status='preparing',captureHash=capture['hash']))
+    try:
+        write_separator_plan(session/'separator-source/elements.json',manifest_path,attempt/'separators.json')
+        prepare_pipeline(attempt,manifest_path,ifc_path,Path(assets).resolve());verify(session)
+        manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+        state.update(status='ready',pipeline=str(attempt/'pipeline.json'),manifest=str(manifest_path),captureHash=capture['hash'],preparedOffline=True,
+            manifestSha256=capture['files']['source/manifest.json'],ifcSha256=capture['files']['source/model.ifc'],
+            counts=dict(collections.Counter(e['kind'] for e in manifest['elements'])),completedUtc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+        for obsolete in ('error','errorType','phase','memoryBudget'):state.pop(obsolete,None)
+        write_json(attempt/'attempt.json',dict(status='ready',captureHash=capture['hash']));write_json(state_path,state)
+        write_json(ROOT/'artifacts/sessions/last-completed.json',{'session':str(state_path)})
+        print('Готово. План автономной подготовки: '+state['pipeline'],flush=True);return state
+    except BaseException as exc:
+        write_json(attempt/'attempt.json',dict(status='failed',error=error_message(exc),errorType=type(exc).__name__,captureHash=capture['hash']))
+        (attempt/'failure.txt').write_text(traceback.format_exc(),encoding='utf-8');raise
+
+
+def capture_existing_session(args):
+    """Seal completed legacy reads after a fresh full source verification."""
+    from source_capture import seal,memory_budget
+    session=args.session.resolve()
+    if session.name=='session.json':session=session.parent
+    if not session.is_relative_to(ROOT/'artifacts/sessions'):raise ValueError('Session is outside the exchange folder')
+    state=json.loads((session/'session.json').read_text(encoding='utf-8-sig'))
+    if state.get('format')!='ac2r.session/1':raise ValueError('Invalid session')
+    info=probe(args.port)
+    if info['projectId']!=state['projectId'] or info['project']!=state['project']:raise ValueError('Different source project is open')
+    ifc=session/'source/model.ifc'
+    with ifc.open('rb') as stream:
+        stream.seek(max(0,ifc.stat().st_size-4096))
+        if b'END-ISO-10303-21;' not in stream.read():raise ValueError('IFC capture is incomplete')
+    api=TapirClient(args.port,session/('capture-verification-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S%f')),timeout=180)
+    verification=verify_source_geometry(session/'source/manifest.json',api)
+    write_json(session/'source-verification.json',verification)
+    capture=seal(session,info)
+    state.update(status='captured',captureHash=capture['hash'],capturedUtc=capture['capturedUtc'],memoryBudget=memory_budget(ifc),counts=verification['counts'])
+    for obsolete in ('error','errorType','phase'):state.pop(obsolete,None)
+    write_json(session/'session.json',state);return state
 
 
 def main():
@@ -335,10 +408,12 @@ def main():
     a.add_argument('--gdl', action='store_true', help='Full library parameters; may produce gigabytes of data')
     a=sub.add_parser('prepare');a.add_argument('--session',type=Path,required=True);a.add_argument('--port',type=int,default=19723)
     a.add_argument('--assets',type=Path,required=True)
+    a=sub.add_parser('capture');a.add_argument('--session',type=Path,required=True);a.add_argument('--port',type=int,default=19723)
     args = p.parse_args()
     try:
         if args.command == 'probe': write_json(args.result, probe(args.port))
         elif args.command=='export': run(args)
+        elif args.command=='capture':capture_existing_session(args)
         else:continue_session(args)
         return 0
     except Exception as exc:
